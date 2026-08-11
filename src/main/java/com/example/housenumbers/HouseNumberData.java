@@ -1,6 +1,7 @@
 package com.example.housenumbers;
 
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.HolderLookup;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
 import net.minecraft.world.level.saveddata.SavedData;
@@ -48,7 +49,7 @@ public class HouseNumberData extends SavedData {
     }
 
     @Override
-    public CompoundTag save(CompoundTag tag) {
+    public CompoundTag save(CompoundTag tag, HolderLookup.Provider registries) {
         ListTag list = new ListTag();
         for (Map.Entry<BlockPos, Integer> e : posToNumber.entrySet()) {
             CompoundTag entry = new CompoundTag();
@@ -63,7 +64,7 @@ public class HouseNumberData extends SavedData {
         return tag;
     }
 
-    public static HouseNumberData load(CompoundTag tag) {
+    public static HouseNumberData load(CompoundTag tag, HolderLookup.Provider registries) {
         HouseNumberData data = new HouseNumberData();
         ListTag list = tag.getList("houses", CompoundTag.TAG_COMPOUND);
         for (int i = 0; i < list.size(); i++) {
