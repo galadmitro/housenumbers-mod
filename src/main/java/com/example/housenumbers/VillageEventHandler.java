@@ -1,7 +1,7 @@
 package com.example.housenumbers;
 
 import net.minecraft.core.BlockPos;
-import net.minecraft.network.chat.Component;https://github.com/notifications
+import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.decoration.ArmorStand;
@@ -15,17 +15,6 @@ import net.neoforged.neoforge.event.tick.LevelTickEvent;
 import java.util.Set;
 import java.util.stream.Collectors;
 
-/**
- * Every few seconds, looks for villager "home" beds in loaded chunks.
- * Each new bed found gets the next free sequential number, permanently,
- * and gets an invisible marker with a floating name tag showing "House #N".
- *
- * Note on scope: a "house" here = one bed POI. This is intentionally simple
- * because vanilla village generation doesn't expose clean "building"
- * boundaries at runtime - beds are the reliable, POI-backed anchor, and they
- * are exactly what the vanilla AI uses to decide which villager "owns" which
- * house in the first place.
- */
 @EventBusSubscriber(modid = HouseNumbersMod.MODID)
 public class VillageEventHandler {
 
@@ -44,8 +33,6 @@ public class VillageEventHandler {
         PoiManager poiManager = level.getPoiManager();
         HouseNumberData data = HouseNumberData.get(level.getDataStorage());
 
-        // Scan around every online player. Keeps this cheap and only
-        // touches chunks that are actually loaded/relevant.
         level.players().forEach(player -> {
             BlockPos center = player.blockPosition();
 
