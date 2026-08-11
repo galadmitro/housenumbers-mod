@@ -55,6 +55,26 @@ house has one bed, you already get exactly one villager per house — for
 free, with no extra code needed. This mod doesn't change that behavior; it
 just visualizes it by numbering the beds.
 
+## Recent changes (untested by Claude - build and report errors back)
+
+- House number labels are now centered on the true midpoint of the bed (beds are
+  two blocks, head+foot - previously the label sat over just one half).
+- Every adult villager now carries its own small "House #N" tag (rides on top of
+  it, distinct from its name tag).
+- Villagers now eagerly claim and lock a home bed as soon as they're seen, instead
+  of relying on vanilla's slower/competitive claiming - this is meant to stop the
+  "runs to a random house when the bell rings" behavior, which usually happens
+  because a villager hasn't successfully claimed a bed yet.
+- Baby villagers no longer keep a bed of their own: any home they claim gets
+  released immediately. Instead, each baby remembers one nearby adult as its
+  "parent" (first villager seen nearby, remembered permanently via NBT) and
+  paths toward them if it wanders more than ~3 blocks away. The baby's house tag
+  mirrors its parent's current house number.
+
+These changes use PoiManager/Brain APIs that are sensitive to exact Minecraft
+version - built against 1.21.1 mappings from memory, not compiled/tested locally.
+If the build fails, copy the compiler error back and it can be fixed quickly.
+
 ## Limitations / things to be aware of
 
 - A "house" here = a bed's POI marker, not the actual building geometry.

@@ -27,6 +27,11 @@ public class HouseNumberData extends SavedData {
         return posToNumber.containsKey(pos.immutable());
     }
 
+    /** Returns the house number for a bed position, or null if it hasn't been assigned yet. */
+    public Integer numberFor(BlockPos pos) {
+        return posToNumber.get(pos.immutable());
+    }
+
     public int assign(BlockPos pos) {
         BlockPos key = pos.immutable();
         Integer existing = posToNumber.get(key);
