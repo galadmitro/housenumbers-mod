@@ -101,9 +101,9 @@ public class VillageEventHandler {
 
         BlockPos villagerPos = villager.blockPosition();
         poiManager.getInRange(h -> h.is(PoiTypes.HOME), villagerPos, SCAN_RADIUS, PoiManager.Occupancy.HAS_SPACE)
-                .min(Comparator.comparingDouble(p -> p.pos().distSqr(villagerPos)))
+                .min(Comparator.comparingDouble(p -> p.getPos().distSqr(villagerPos)))
                 .ifPresent(poiRecord -> {
-                    BlockPos bedPos = poiRecord.pos();
+                    BlockPos bedPos = poiRecord.getPos();
                     boolean claimed = poiManager.take(
                             h -> h.is(PoiTypes.HOME),
                             (h, p) -> p.equals(bedPos),
