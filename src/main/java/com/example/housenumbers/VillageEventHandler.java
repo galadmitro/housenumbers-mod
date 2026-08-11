@@ -14,7 +14,6 @@ import net.minecraft.world.entity.ai.village.poi.PoiTypes;
 import net.minecraft.world.entity.npc.Villager;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.chunk.LevelChunk;
-import net.minecraft.world.phys.AABB;
 
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
@@ -131,27 +130,28 @@ public class VillageEventHandler {
         Brain<Villager> brain = villager.getBrain();
         BlockPos currentPos = villager.blockPosition();
 
-        // 1. Wipe bell hide target memory so they never run into someone else's house during a bell ring
-        if (brain.hasMemoryValue(MemoryModuleType.HEARD_BELL_TARGET)) {
-            brain.eraseMemory(MemoryModuleType.HEARD_BELL_TARGET);
+        // Wipe bell panic and hiding place memories so they never hide in someone else's house
+        if (brain.hasMemoryValue(MemoryModuleType.HEARD_BELL_TIME)) {
+            brain.eraseMemory(MemoryModuleType.HEARD_BELL_TIME);
+        }
+        if (brain.hasMemoryValue(MemoryModuleType.HIDING_PLACE)) {
+            brain.eraseMemory(MemoryModuleType.HIDING_PLACE);
         }
 
-        // 2. Check if villager currently has an assigned Home
         Optional<GlobalPos> myHomeOpt = brain.getMemory(MemoryModuleType.HOME);
         BlockPos myHomeBed = myHomeOpt.map(GlobalPos::pos).orElse(null);
         Integer myHouseNumber = myHomeBed != null ? data.getHouseNumber(myHomeBed) : null;
 
-        // 3. Scan 3x3 surrounding blocks to detect if villager is standing inside ANY house structure
+        // Check if villager is standing inside ANY house structure
         for (BlockPos nearby : BlockPos.betweenClosed(currentPos.offset(-2, -1, -2), currentPos.offset(2, 1, 2))) {
             if (data.isBedKnown(nearby)) {
                 Integer currentHouseNumber = data.getHouseNumber(nearby);
 
-                // If standing in a house that isn't theirs (or if they don't own a house yet), EVICT THEM!
+                // If standing in a house that isn't theirs (or if they don't own a house), EVICT THEM!
                 if (currentHouseNumber != null && !currentHouseNumber.equals(myHouseNumber)) {
                     brain.eraseMemory(MemoryModuleType.WALK_TARGET);
                     brain.eraseMemory(MemoryModuleType.PATH);
 
-                    // Move them immediately to open outdoor space
                     BlockPos exitPos = findOutdoorExit(level, currentPos);
                     villager.getNavigation().moveTo(exitPos.getX() + 0.5, exitPos.getY(), exitPos.getZ() + 0.5, 0.65);
                     return;
