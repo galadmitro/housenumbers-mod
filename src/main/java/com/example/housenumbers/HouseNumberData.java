@@ -7,10 +7,7 @@ import net.minecraft.nbt.ListTag;
 import net.minecraft.world.level.saveddata.SavedData;
 import net.minecraft.world.level.storage.DimensionDataStorage;
 
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 public class HouseNumberData extends SavedData {
     private static final String ID = "housenumbers_data";
@@ -19,6 +16,7 @@ public class HouseNumberData extends SavedData {
     private final Map<BlockPos, BlockPos> bedToVillageCenter = new HashMap<>();
     private final Map<BlockPos, Integer> villageNextNumber = new HashMap<>();
     private final List<BlockPos> villageCenters = new ArrayList<>();
+    private final Set<BlockPos> taggedStructures = new HashSet<>();
 
     public static HouseNumberData get(DimensionDataStorage storage) {
         return storage.computeIfAbsent(
@@ -39,7 +37,6 @@ public class HouseNumberData extends SavedData {
         return bedToVillageCenter.get(pos.immutable());
     }
 
-    /** Finds an existing village center within radius, or registers a new village center. */
     public BlockPos findOrCreateVillageCenter(BlockPos pos, double radius) {
         BlockPos key = pos.immutable();
         for (BlockPos center : villageCenters) {
@@ -50,6 +47,15 @@ public class HouseNumberData extends SavedData {
         villageCenters.add(key);
         setDirty();
         return key;
+    }
+
+    public boolean isStructureTagged(BlockPos structPos) {
+        return taggedStructures.contains(structPos.immutable());
+    }
+
+    public void markStructureTagged(BlockPos structPos) {
+        taggedStructures.add(structPos.immutable());
+        setDirty();
     }
 
     public void registerBed(BlockPos bedPos, int houseNumber, BlockPos villageCenter) {
@@ -110,6 +116,16 @@ public class HouseNumberData extends SavedData {
         }
         tag.put("centers", centersList);
 
+        ListTag structsList = new ListTag();
+        for (BlockPos s : taggedStructures) {
+            CompoundTag sTag = new CompoundTag();
+            sTag.putInt("x", s.getX());
+            sTag.putInt("y", s.getY());
+            sTag.putInt("z", s.getZ());
+            structsList.add(sTag);
+        }
+        tag.put("structs", structsList);
+
         return tag;
     }
 
@@ -135,6 +151,12 @@ public class HouseNumberData extends SavedData {
         for (int i = 0; i < centersList.size(); i++) {
             CompoundTag cTag = centersList.getCompound(i);
             data.villageCenters.add(new BlockPos(cTag.getInt("x"), cTag.getInt("y"), cTag.getInt("z")));
+        }
+
+        ListTag structsList = tag.getList("structs", CompoundTag.TAG_COMPOUND);
+        for (int i = 0; i < structsList.size(); i++) {
+            CompoundTag sTag = structsList.getCompound(i);
+            data.taggedStructures.add(new BlockPos(sTag.getInt("x"), sTag.getInt("y"), sTag.getInt("z")));
         }
 
         return data;
