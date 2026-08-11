@@ -32,8 +32,6 @@ import java.util.stream.Collectors;
 @EventBusSubscriber(modid = HouseNumbersMod.MODID)
 public class VillageEventHandler {
 
-    // NBT keys we stash on entities' persistent data so state survives a restart
-    // without needing a whole extra SavedData file.
     private static final String NBT_TAG_ENTITY_UUID = "hn_tag_uuid";
     private static final String NBT_PARENT_UUID = "hn_parent_uuid";
 
@@ -78,7 +76,6 @@ public class VillageEventHandler {
         });
     }
 
-    /** Finds beds nobody has numbered yet and assigns/labels them. */
     private static void discoverBeds(ServerLevel level, PoiManager poiManager, HouseNumberData data, BlockPos center) {
         Set<BlockPos> homeBeds = poiManager.findAll(
                 holder -> holder.is(PoiTypes.HOME),
@@ -96,23 +93,17 @@ public class VillageEventHandler {
         }
     }
 
-    /**
-     * Makes sure every adult villager has a HOME memory pointing at a bed it has actually
-     * reserved through the PoiManager. Vanilla does this too, but only opportunistically
-     * (competing with other villagers, retrying occasionally) - which is why a villager can
-     * spend a while "homeless" and, during a bell panic, just run toward the nearest bed
-     * instead of its own. We claim eagerly so that stops happening.
-     */
     private static void lockHome(ServerLevel level, PoiManager poiManager, Villager villager) {
         Brain<Villager> brain = villager.getBrain();
         if (brain.hasMemoryValue(MemoryModuleType.HOME)) {
-            return; // already has a claimed bed - vanilla will keep using it
+            return;
         }
 
         BlockPos villagerPos = villager.blockPosition();
         poiManager.getInRange(h -> h.is(PoiTypes.HOME), villagerPos, SCAN_RADIUS, PoiManager.Occupancy.HAS_SPACE)
-                .min(Comparator.comparingDouble(p -> p.distSqr(villagerPos)))
-                .ifPresent(bedPos -> {
+                .min(Comparator.comparingDouble(p -> p.pos().distSqr(villagerPos)))
+                .ifPresent(poiRecord -> {
+                    BlockPos bedPos = poiRecord.pos();
                     boolean claimed = poiManager.take(
                             h -> h.is(PoiTypes.HOME),
                             (h, p) -> p.equals(bedPos),
@@ -125,7 +116,6 @@ public class VillageEventHandler {
                 });
     }
 
-    /** Attaches/updates a small floating tag on the villager showing its own house number. */
     private static void tagVillagerWithOwnHouse(ServerLevel level, Villager villager, HouseNumberData data) {
         villager.getBrain().getMemory(MemoryModuleType.HOME).ifPresent(home -> {
             Integer number = data.numberFor(home.pos());
@@ -135,18 +125,15 @@ public class VillageEventHandler {
         });
     }
 
-    /** Handles a baby villager: no bed of its own, and it walks with a parent. */
     private static void handleBaby(ServerLevel level, PoiManager poiManager, Villager baby,
                                     List<Villager> nearbyVillagers, HouseNumberData data, boolean doFollow) {
         CompoundTag persist = baby.getPersistentData();
 
-        // Strip any bed the baby claimed on its own - it shouldn't have one.
         baby.getBrain().getMemory(MemoryModuleType.HOME).ifPresent(home -> {
             poiManager.release(home.pos());
             baby.getBrain().eraseMemory(MemoryModuleType.HOME);
         });
 
-        // Find (and remember forever) which adult is this baby's parent.
         Villager parent = null;
         if (persist.hasUUID(NBT_PARENT_UUID)) {
             UUID parentId = persist.getUUID(NBT_PARENT_UUID);
@@ -167,12 +154,11 @@ public class VillageEventHandler {
 
         if (doFollow) {
             double distSqr = baby.distanceToSqr(parent);
-            if (distSqr > 9.0 && !baby.getNavigation().isInProgress()) { // more than 3 blocks away
+            if (distSqr > 9.0 && !baby.getNavigation().isInProgress()) {
                 baby.getNavigation().moveTo(parent, 0.6);
             }
         }
 
-        // Baby shares the parent's house number/tag, whatever it currently is.
         parent.getBrain().getMemory(MemoryModuleType.HOME).ifPresent(home -> {
             Integer number = data.numberFor(home.pos());
             if (number != null) {
@@ -181,7 +167,6 @@ public class VillageEventHandler {
         });
     }
 
-    /** Creates the tag entity riding this villager if it doesn't have one yet, else refreshes its text. */
     private static void updateTag(ServerLevel level, Villager owner, int number) {
         CompoundTag persist = owner.getPersistentData();
         Component text = Component.literal("House #" + number);
@@ -196,16 +181,21 @@ public class VillageEventHandler {
             }
         }
 
-        // No live tag found - make one and ride it on the villager.
         ArmorStand tag = new ArmorStand(EntityType.ARMOR_STAND, level);
         tag.setPos(owner.getX(), owner.getY(), owner.getZ());
         tag.setInvisible(true);
-        tag.setSmall(true);
         tag.setNoGravity(true);
         tag.setInvulnerable(true);
         tag.setNoBasePlate(true);
         tag.setSilent(true);
-        tag.setMarker(false); // markers can't be ridden/rendered as passengers reliably
+        
+        // Modify NBT directly to avoid private access on setSmall / setMarker
+        CompoundTag tagNbt = new CompoundTag();
+        tag.saveWithoutId(tagNbt);
+        tagNbt.putBoolean("Small", true);
+        tagNbt.putBoolean("Marker", false);
+        tag.load(tagNbt);
+
         tag.setCustomName(text);
         tag.setCustomNameVisible(true);
         level.addFreshEntity(tag);
@@ -228,7 +218,6 @@ public class VillageEventHandler {
         level.addFreshEntity(stand);
     }
 
-    /** Beds are two blocks (head + foot); this finds the true midpoint instead of one half. */
     private static Vec3 bedCenter(ServerLevel level, BlockPos pos) {
         BlockState state = level.getBlockState(pos);
         if (state.getBlock() instanceof BedBlock && state.hasProperty(BedBlock.PART)) {
