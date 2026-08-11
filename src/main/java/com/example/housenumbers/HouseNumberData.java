@@ -10,13 +10,6 @@ import net.minecraft.world.level.storage.DimensionDataStorage;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
-/**
- * Saved to disk with the world. Remembers which bed (= "house") already
- * got a number, and what the next free number is, so numbers:
- *  - are assigned once, in discovery order
- *  - never repeat
- *  - survive server restarts
- */
 public class HouseNumberData extends SavedData {
     private static final String ID = "housenumbers_data";
 
@@ -34,7 +27,6 @@ public class HouseNumberData extends SavedData {
         return posToNumber.containsKey(pos.immutable());
     }
 
-    /** Returns the existing number for this bed, or assigns and returns the next free one. */
     public int assign(BlockPos pos) {
         BlockPos key = pos.immutable();
         Integer existing = posToNumber.get(key);
