@@ -1,7 +1,7 @@
 package com.example.housenumbers;
 
 import net.minecraft.core.BlockPos;
-import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.Component;https://github.com/notifications
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.decoration.ArmorStand;
@@ -72,8 +72,10 @@ public class VillageEventHandler {
         stand.setPos(above.getX() + 0.5, above.getY(), above.getZ() + 0.5);
         stand.setInvisible(true);
         stand.setNoGravity(true);
-        stand.setMarker(true);
+        stand.setSmall(true);
         stand.setInvulnerable(true);
+        stand.setNoBasePlate(true);
+        stand.setSilent(true);
         stand.setCustomName(Component.literal("House #" + number));
         stand.setCustomNameVisible(true);
         level.addFreshEntity(stand);
