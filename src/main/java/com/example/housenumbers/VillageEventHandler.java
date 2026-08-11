@@ -13,10 +13,12 @@ import net.minecraft.world.entity.ai.village.poi.PoiManager;
 import net.minecraft.world.entity.ai.village.poi.PoiTypes;
 import net.minecraft.world.entity.npc.Villager;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.phys.AABB;
 
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
+import net.neoforged.neoforge.event.level.ChunkEvent;
 import net.neoforged.neoforge.event.tick.LevelTickEvent;
 
 import java.util.*;
@@ -31,11 +33,23 @@ public class VillageEventHandler {
     private static final String NBT_PARENT_UUID = "hn_parent_uuid";
 
     private static int tickCounter = 0;
-    private static final int DISCOVER_INTERVAL_TICKS = 100; // ~5s
-    private static final int FOLLOW_INTERVAL_TICKS = 10;     // ~0.5s for smooth baby movement
-    private static final int SCAN_RADIUS = 48;
+    private static final int CHECK_INTERVAL_TICKS = 10;     // Run strict checks twice a second
     private static final int VILLAGE_RADIUS = 80;
     private static final int HOUSE_STRUCTURE_RADIUS = 8;    // Beds within 8 blocks = same house structure
+
+    /** Triggers IMMEDIATELY when a village chunk generates or loads—no player proximity required! */
+    @SubscribeEvent
+    public static void onChunkLoad(ChunkEvent.Load event) {
+        if (!(event.getLevel() instanceof ServerLevel level)) return;
+        if (level.dimension() != Level.OVERWORLD) return;
+        if (!(event.getChunk() instanceof LevelChunk chunk)) return;
+
+        PoiManager poiManager = level.getPoiManager();
+        HouseNumberData data = HouseNumberData.get(level.getDataStorage());
+
+        BlockPos chunkCenter = chunk.getPos().getMiddleBlockPosition(64);
+        discoverAndTagHouseStructures(level, poiManager, data, chunkCenter, 32);
+    }
 
     @SubscribeEvent
     public static void onLevelTick(LevelTickEvent.Post event) {
@@ -43,51 +57,35 @@ public class VillageEventHandler {
         if (level.dimension() != Level.OVERWORLD) return;
 
         tickCounter++;
+        if (tickCounter % CHECK_INTERVAL_TICKS != 0) return;
+
         PoiManager poiManager = level.getPoiManager();
         HouseNumberData data = HouseNumberData.get(level.getDataStorage());
 
-        boolean doDiscover = tickCounter % DISCOVER_INTERVAL_TICKS == 0;
-        boolean doFollow = tickCounter % FOLLOW_INTERVAL_TICKS == 0;
-        if (!doDiscover && !doFollow) return;
-
-        level.players().forEach(player -> {
-            BlockPos playerPos = player.blockPosition();
-
-            if (doDiscover) {
-                discoverAndTagHouseStructures(level, poiManager, data, playerPos);
-            }
-
-            List<Villager> villagers = level.getEntitiesOfClass(
-                    Villager.class,
-                    new AABB(playerPos).inflate(SCAN_RADIUS)
-            );
-
-            for (Villager villager : villagers) {
+        level.getAllEntities().forEach(entity -> {
+            if (entity instanceof Villager villager && villager.isAlive()) {
                 if (villager.isBaby()) {
-                    if (doFollow) {
-                        handleBabyVillager(level, villager, villagers);
-                    }
-                } else if (doDiscover) {
+                    handleBabyVillager(level, villager);
+                } else {
                     lockHomeInVillage(level, poiManager, villager, data);
+                    enforceStrictHousePrivacy(level, villager, data);
                     enforceVillageBoundary(level, villager);
                 }
             }
         });
     }
 
-    /** Finds beds, groups beds in the same building structure together, assigns ONE house number, and tags the roof. */
-    private static void discoverAndTagHouseStructures(ServerLevel level, PoiManager poiManager, HouseNumberData data, BlockPos playerPos) {
+    private static void discoverAndTagHouseStructures(ServerLevel level, PoiManager poiManager, HouseNumberData data, BlockPos center, int radius) {
         List<BlockPos> unassignedBeds = poiManager.findAll(
                 holder -> holder.is(PoiTypes.HOME),
                 pos -> true,
-                playerPos,
-                SCAN_RADIUS,
+                center,
+                radius,
                 PoiManager.Occupancy.ANY
         ).filter(bedPos -> !data.isBedKnown(bedPos)).collect(Collectors.toList());
 
         if (unassignedBeds.isEmpty()) return;
 
-        // Group beds in the same structure together (beds within 8 blocks belong to 1 house)
         List<List<BlockPos>> structureClusters = new ArrayList<>();
         for (BlockPos bed : unassignedBeds) {
             boolean addedToExisting = false;
@@ -117,24 +115,54 @@ public class VillageEventHandler {
 
             int houseNumber = data.getNextHouseNumberForVillage(villageCenter);
 
-            // Register ALL beds in this structure under the SAME house number
             for (BlockPos bed : houseBeds) {
                 data.registerBed(bed, houseNumber, villageCenter);
             }
             data.incrementVillageHouseNumber(villageCenter);
             data.markStructureTagged(structureCenter);
 
-            // Find roof peak above the building structure and place ONE house tag
             BlockPos roofPos = findRoofTop(level, structureCenter);
             spawnRoofLabel(level, roofPos, houseNumber);
         }
     }
 
-    /** Handles baby villagers following their parent naturally. */
-    private static void handleBabyVillager(ServerLevel level, Villager baby, List<Villager> nearbyVillagers) {
+    /** Strictly prevents villagers from entering or hiding in unowned houses (even when attacked or during a bell ring). */
+    private static void enforceStrictHousePrivacy(ServerLevel level, Villager villager, HouseNumberData data) {
+        Brain<Villager> brain = villager.getBrain();
+        BlockPos currentPos = villager.blockPosition();
+
+        // 1. Wipe bell hide target memory so they never run into someone else's house during a bell ring
+        if (brain.hasMemoryValue(MemoryModuleType.HEARD_BELL_TARGET)) {
+            brain.eraseMemory(MemoryModuleType.HEARD_BELL_TARGET);
+        }
+
+        // 2. Check if villager currently has an assigned Home
+        Optional<GlobalPos> myHomeOpt = brain.getMemory(MemoryModuleType.HOME);
+        BlockPos myHomeBed = myHomeOpt.map(GlobalPos::pos).orElse(null);
+        Integer myHouseNumber = myHomeBed != null ? data.getHouseNumber(myHomeBed) : null;
+
+        // 3. Scan 3x3 surrounding blocks to detect if villager is standing inside ANY house structure
+        for (BlockPos nearby : BlockPos.betweenClosed(currentPos.offset(-2, -1, -2), currentPos.offset(2, 1, 2))) {
+            if (data.isBedKnown(nearby)) {
+                Integer currentHouseNumber = data.getHouseNumber(nearby);
+
+                // If standing in a house that isn't theirs (or if they don't own a house yet), EVICT THEM!
+                if (currentHouseNumber != null && !currentHouseNumber.equals(myHouseNumber)) {
+                    brain.eraseMemory(MemoryModuleType.WALK_TARGET);
+                    brain.eraseMemory(MemoryModuleType.PATH);
+
+                    // Move them immediately to open outdoor space
+                    BlockPos exitPos = findOutdoorExit(level, currentPos);
+                    villager.getNavigation().moveTo(exitPos.getX() + 0.5, exitPos.getY(), exitPos.getZ() + 0.5, 0.65);
+                    return;
+                }
+            }
+        }
+    }
+
+    private static void handleBabyVillager(ServerLevel level, Villager baby) {
         CompoundTag nbt = baby.getPersistentData();
 
-        // Baby stays near parent and releases personal home bed memory
         baby.getBrain().getMemory(MemoryModuleType.HOME).ifPresent(home -> {
             level.getPoiManager().release(home.pos());
             baby.getBrain().eraseMemory(MemoryModuleType.HOME);
@@ -149,7 +177,8 @@ public class VillageEventHandler {
         }
 
         if (parent == null) {
-            parent = nearbyVillagers.stream()
+            parent = level.getEntitiesOfClass(Villager.class, baby.getBoundingBox().inflate(32))
+                    .stream()
                     .filter(v -> !v.isBaby())
                     .min(Comparator.comparingDouble(v -> v.distanceToSqr(baby)))
                     .orElse(null);
@@ -166,14 +195,13 @@ public class VillageEventHandler {
         }
     }
 
-    /** Binds adult villagers to beds strictly in their home village. */
     private static void lockHomeInVillage(ServerLevel level, PoiManager poiManager, Villager villager, HouseNumberData data) {
         Brain<Villager> brain = villager.getBrain();
         if (brain.hasMemoryValue(MemoryModuleType.HOME)) return;
 
         BlockPos villagerPos = villager.blockPosition();
 
-        poiManager.getInRange(h -> h.is(PoiTypes.HOME), villagerPos, SCAN_RADIUS, PoiManager.Occupancy.HAS_SPACE)
+        poiManager.getInRange(h -> h.is(PoiTypes.HOME), villagerPos, 48, PoiManager.Occupancy.HAS_SPACE)
                 .min(Comparator.comparingDouble(p -> p.getPos().distSqr(villagerPos)))
                 .ifPresent(poiRecord -> {
                     BlockPos bedPos = poiRecord.getPos();
@@ -183,7 +211,7 @@ public class VillageEventHandler {
                     if (nbt.contains(NBT_VILLAGE_X)) {
                         BlockPos myVillage = new BlockPos(nbt.getInt(NBT_VILLAGE_X), nbt.getInt(NBT_VILLAGE_Y), nbt.getInt(NBT_VILLAGE_Z));
                         if (bedVillage != null && !bedVillage.equals(myVillage)) {
-                            return; // Block taking bed in another village
+                            return;
                         }
                     }
 
@@ -205,7 +233,6 @@ public class VillageEventHandler {
                 });
     }
 
-    /** Prevents villagers from wandering off to another village. */
     private static void enforceVillageBoundary(ServerLevel level, Villager villager) {
         CompoundTag nbt = villager.getPersistentData();
         if (!nbt.contains(NBT_VILLAGE_X)) return;
@@ -218,6 +245,17 @@ public class VillageEventHandler {
         }
     }
 
+    private static BlockPos findOutdoorExit(ServerLevel level, BlockPos startPos) {
+        for (int r = 1; r <= 8; r++) {
+            for (BlockPos p : BlockPos.betweenClosed(startPos.offset(-r, -1, -r), startPos.offset(r, 2, r))) {
+                if (level.canSeeSky(p) && level.isEmptyBlock(p) && level.isEmptyBlock(p.above())) {
+                    return p.immutable();
+                }
+            }
+        }
+        return startPos.offset(3, 0, 3);
+    }
+
     private static BlockPos calculateStructureCenter(List<BlockPos> beds) {
         int sumX = 0, sumY = 0, sumZ = 0;
         for (BlockPos b : beds) {
@@ -228,7 +266,6 @@ public class VillageEventHandler {
         return new BlockPos(sumX / beds.size(), sumY / beds.size(), sumZ / beds.size());
     }
 
-    /** Raycasts up from the house center to place the tag above the roof. */
     private static BlockPos findRoofTop(ServerLevel level, BlockPos center) {
         BlockPos.MutableBlockPos checkPos = new BlockPos.MutableBlockPos(center.getX(), center.getY(), center.getZ());
         while (checkPos.getY() < level.getMaxBuildHeight() - 1) {
