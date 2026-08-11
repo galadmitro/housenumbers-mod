@@ -7,7 +7,9 @@ import net.minecraft.nbt.ListTag;
 import net.minecraft.world.level.saveddata.SavedData;
 import net.minecraft.world.level.storage.DimensionDataStorage;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 public class HouseNumberData extends SavedData {
@@ -16,6 +18,7 @@ public class HouseNumberData extends SavedData {
     private final Map<BlockPos, Integer> bedToHouseNumber = new HashMap<>();
     private final Map<BlockPos, BlockPos> bedToVillageCenter = new HashMap<>();
     private final Map<BlockPos, Integer> villageNextNumber = new HashMap<>();
+    private final List<BlockPos> villageCenters = new ArrayList<>();
 
     public static HouseNumberData get(DimensionDataStorage storage) {
         return storage.computeIfAbsent(
@@ -34,6 +37,19 @@ public class HouseNumberData extends SavedData {
 
     public BlockPos getVillageCenter(BlockPos pos) {
         return bedToVillageCenter.get(pos.immutable());
+    }
+
+    /** Finds an existing village center within radius, or registers a new village center. */
+    public BlockPos findOrCreateVillageCenter(BlockPos pos, double radius) {
+        BlockPos key = pos.immutable();
+        for (BlockPos center : villageCenters) {
+            if (center.closerThan(key, radius)) {
+                return center;
+            }
+        }
+        villageCenters.add(key);
+        setDirty();
+        return key;
     }
 
     public void registerBed(BlockPos bedPos, int houseNumber, BlockPos villageCenter) {
@@ -84,6 +100,16 @@ public class HouseNumberData extends SavedData {
         }
         tag.put("villages", villagesList);
 
+        ListTag centersList = new ListTag();
+        for (BlockPos c : villageCenters) {
+            CompoundTag cTag = new CompoundTag();
+            cTag.putInt("x", c.getX());
+            cTag.putInt("y", c.getY());
+            cTag.putInt("z", c.getZ());
+            centersList.add(cTag);
+        }
+        tag.put("centers", centersList);
+
         return tag;
     }
 
@@ -103,6 +129,12 @@ public class HouseNumberData extends SavedData {
             CompoundTag vTag = villagesList.getCompound(i);
             BlockPos center = new BlockPos(vTag.getInt("cx"), vTag.getInt("cy"), vTag.getInt("cz"));
             data.villageNextNumber.put(center, vTag.getInt("next"));
+        }
+
+        ListTag centersList = tag.getList("centers", CompoundTag.TAG_COMPOUND);
+        for (int i = 0; i < centersList.size(); i++) {
+            CompoundTag cTag = centersList.getCompound(i);
+            data.villageCenters.add(new BlockPos(cTag.getInt("x"), cTag.getInt("y"), cTag.getInt("z")));
         }
 
         return data;
