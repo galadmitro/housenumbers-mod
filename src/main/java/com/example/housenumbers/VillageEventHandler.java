@@ -72,7 +72,6 @@ public class VillageEventHandler {
         });
     }
 
-    /** Discovers beds, groups nearby beds into single Houses, and places tags above the roof. */
     private static void discoverAndGroupStructures(ServerLevel level, PoiManager poiManager, HouseNumberData data, BlockPos playerPos) {
         List<BlockPos> unassignedBeds = poiManager.findAll(
                 holder -> holder.is(PoiTypes.HOME),
@@ -84,7 +83,7 @@ public class VillageEventHandler {
 
         if (unassignedBeds.isEmpty()) return;
 
-        // Group beds into structures (beds within 6 blocks belong to the same House)
+        // Group beds in the same building structure together
         List<List<BlockPos>> houseClusters = new ArrayList<>();
         for (BlockPos bed : unassignedBeds) {
             boolean addedToExisting = false;
@@ -107,7 +106,9 @@ public class VillageEventHandler {
 
         for (List<BlockPos> house : houseClusters) {
             BlockPos primaryBed = house.get(0);
-            BlockPos villageCenter = findOrCreateVillageCenter(data, primaryBed);
+
+            // Find or associate with the nearest village center within VILLAGE_RADIUS
+            BlockPos villageCenter = data.findOrCreateVillageCenter(primaryBed, VILLAGE_RADIUS);
             int houseNumber = data.getNextHouseNumberForVillage(villageCenter);
 
             for (BlockPos bed : house) {
@@ -115,13 +116,12 @@ public class VillageEventHandler {
             }
             data.incrementVillageHouseNumber(villageCenter);
 
-            // Calculate roof location and spawn the tag above the house structure
-            BlockPos roofPos = findRoofTop(level, house);
+            // Locate physical structure roof top and spawn house label high above building
+            BlockPos roofPos = findPhysicalRoofPeak(level, house);
             spawnRoofLabel(level, roofPos, houseNumber);
         }
     }
 
-    /** Locks villager homes strictly within their own village boundary. */
     private static void lockHomeInVillage(ServerLevel level, PoiManager poiManager, Villager villager, HouseNumberData data) {
         Brain<Villager> brain = villager.getBrain();
         if (brain.hasMemoryValue(MemoryModuleType.HOME)) return;
@@ -138,7 +138,7 @@ public class VillageEventHandler {
                     if (nbt.contains(NBT_VILLAGE_X)) {
                         BlockPos myVillage = new BlockPos(nbt.getInt(NBT_VILLAGE_X), nbt.getInt(NBT_VILLAGE_Y), nbt.getInt(NBT_VILLAGE_Z));
                         if (bedVillage != null && !bedVillage.equals(myVillage)) {
-                            return; // Don't allow taking a bed from another village!
+                            return; // Block taking beds in another village
                         }
                     }
 
@@ -160,12 +160,10 @@ public class VillageEventHandler {
                 });
     }
 
-    /** Prevents villagers from straying into other villages or trespassing during the day. */
     private static void enforceBoundariesAndPrivacy(ServerLevel level, Villager villager, HouseNumberData data) {
         CompoundTag nbt = villager.getPersistentData();
         BlockPos currentPos = villager.blockPosition();
 
-        // 1. Cross-village boundary check
         if (nbt.contains(NBT_VILLAGE_X)) {
             BlockPos homeVillage = new BlockPos(nbt.getInt(NBT_VILLAGE_X), nbt.getInt(NBT_VILLAGE_Y), nbt.getInt(NBT_VILLAGE_Z));
             if (!currentPos.closerThan(homeVillage, VILLAGE_RADIUS)) {
@@ -176,18 +174,15 @@ public class VillageEventHandler {
             }
         }
 
-        // 2. Daytime trespassing prevention (stay out of other houses during day)
         if (level.isDay()) {
             villager.getBrain().getMemory(MemoryModuleType.HOME).ifPresent(home -> {
                 Integer myHouseNum = data.getHouseNumber(home.pos());
                 if (myHouseNum == null) return;
 
-                // Check if villager is standing inside a house that isn't theirs
                 for (BlockPos nearbyPos : BlockPos.betweenClosed(currentPos.offset(-2, -1, -2), currentPos.offset(2, 1, 2))) {
                     if (data.isBedKnown(nearbyPos)) {
                         Integer currentHouseNum = data.getHouseNumber(nearbyPos);
                         if (currentHouseNum != null && !currentHouseNum.equals(myHouseNum)) {
-                            // Step out of the house toward open space
                             villager.getNavigation().moveTo(villager.getX() + (villager.getRandom().nextDouble() - 0.5) * 6,
                                     villager.getY(),
                                     villager.getZ() + (villager.getRandom().nextDouble() - 0.5) * 6, 0.55);
@@ -199,32 +194,35 @@ public class VillageEventHandler {
         }
     }
 
-    private static BlockPos findOrCreateVillageCenter(HouseNumberData data, BlockPos bedPos) {
-        BlockPos knownCenter = data.getVillageCenter(bedPos);
-        if (knownCenter != null) return knownCenter;
-        return bedPos;
-    }
+    /** Finds the building center and raycasts upward to find the roof top. */
+    private static BlockPos findPhysicalRoofPeak(ServerLevel level, List<BlockPos> houseBeds) {
+        int sumX = 0, sumZ = 0, startY = houseBeds.get(0).getY();
 
-    /** Raycasts upward from the center of a house bed cluster to find the roof top. */
-    private static BlockPos findRoofTop(ServerLevel level, List<BlockPos> houseBeds) {
-        int sumX = 0, sumY = 0, sumZ = 0;
-        for (BlockPos pos : houseBeds) {
-            sumX += pos.getX();
-            sumY += pos.getY();
-            sumZ += pos.getZ();
+        for (BlockPos b : houseBeds) {
+            sumX += b.getX();
+            sumZ += b.getZ();
+            startY = Math.max(startY, b.getY());
         }
-        BlockPos avgCenter = new BlockPos(sumX / houseBeds.size(), sumY / houseBeds.size(), sumZ / houseBeds.size());
 
-        BlockPos roof = avgCenter.above(2);
-        while (roof.getY() < level.getMaxBuildHeight() - 1 && !level.isEmptyBlock(roof)) {
-            roof = roof.above();
+        int centerX = sumX / houseBeds.size();
+        int centerZ = sumZ / houseBeds.size();
+
+        BlockPos.MutableBlockPos checkPos = new BlockPos.MutableBlockPos(centerX, startY, centerZ);
+        while (checkPos.getY() < level.getMaxBuildHeight() - 1) {
+            if (level.isEmptyBlock(checkPos) && level.isEmptyBlock(checkPos.above())) {
+                if (!level.isEmptyBlock(checkPos.below())) {
+                    return checkPos.immutable();
+                }
+            }
+            checkPos.move(0, 1, 0);
         }
-        return roof;
+
+        return new BlockPos(centerX, startY + 4, centerZ);
     }
 
     private static void spawnRoofLabel(ServerLevel level, BlockPos roofPos, int number) {
         ArmorStand stand = new ArmorStand(EntityType.ARMOR_STAND, level);
-        stand.setPos(roofPos.getX() + 0.5, roofPos.getY() + 0.5, roofPos.getZ() + 0.5);
+        stand.setPos(roofPos.getX() + 0.5, roofPos.getY() + 1.2, roofPos.getZ() + 0.5);
         stand.setInvisible(true);
         stand.setNoGravity(true);
         stand.setInvulnerable(true);
