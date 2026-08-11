@@ -59,7 +59,6 @@ public class VillageEventHandler {
         stand.setPos(above.getX() + 0.5, above.getY(), above.getZ() + 0.5);
         stand.setInvisible(true);
         stand.setNoGravity(true);
-        stand.setSmall(true);
         stand.setInvulnerable(true);
         stand.setNoBasePlate(true);
         stand.setSilent(true);
