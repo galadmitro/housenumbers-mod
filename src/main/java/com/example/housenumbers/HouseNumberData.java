@@ -97,7 +97,6 @@ public class HouseNumberData extends SavedData {
     }
 
     private void spawnHouseTag(ServerLevel level, House house) {
-        // Place tag above roof height
         BlockPos tagPos = house.homePos.above(4);
         while (level.getBlockState(tagPos).isSolid() && tagPos.getY() < level.getMaxBuildHeight()) {
             tagPos = tagPos.above();
@@ -134,7 +133,7 @@ public class HouseNumberData extends SavedData {
             String vId = hTag.getString("VillageId");
             int num = hTag.getInt("Number");
             BlockPos homePos = BlockPos.of(hTag.getLong("HomePos"));
-            
+
             BlockPos bedPos = hTag.contains("BedPos") ? BlockPos.of(hTag.getLong("BedPos")) : null;
             int cap = hTag.getInt("Capacity");
 
