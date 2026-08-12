@@ -20,7 +20,7 @@ import java.util.*;
 
 public class HouseNumberData extends SavedData {
     private static final String DATA_NAME = "house_number_data";
-    private static final double VILLAGE_RADIUS = 64.0; // Distance threshold to group houses into a village
+    public static final double VILLAGE_RADIUS = 64.0; // Radius threshold to cluster a village
 
     public static class House {
         public final int villageId;
@@ -157,11 +157,14 @@ public class HouseNumberData extends SavedData {
         return null;
     }
 
+    // Assigns homeless villagers ONLY to available houses in their local village radius
     public void autoAssignLoadedVillagers(ServerLevel level) {
         List<? extends Villager> villagers = level.getEntities(EntityType.VILLAGER, v -> !v.isBaby() && getHouseForVillager(v.getUUID()) == null);
         for (Villager villager : villagers) {
+            BlockPos villagerPos = villager.blockPosition();
             for (House house : registeredHouses) {
-                if (!house.isFull()) {
+                BlockPos housePos = house.bedPos != null ? house.bedPos : house.homePos;
+                if (housePos.closerThan(villagerPos, VILLAGE_RADIUS) && !house.isFull()) {
                     assignVillagerToHouse(villager.getUUID(), house);
                     break;
                 }
