@@ -32,6 +32,13 @@ public class VillageEventHandler {
             return;
         }
 
+        // --- 1. PREVENT SLIDING / WALKING WHILE SLEEPING ---
+        if (villager.isSleeping()) {
+            villager.getNavigation().stop();
+            villager.getBrain().eraseMemory(MemoryModuleType.WALK_TARGET);
+            return; // Exit early so no movement tasks execute while in bed
+        }
+
         ServerLevel level = (ServerLevel) villager.level();
         HouseNumberData houseData = HouseNumberData.get(level);
         UUID villagerId = villager.getUUID();
@@ -44,7 +51,7 @@ public class VillageEventHandler {
             villager.getBrain().eraseMemory(MemoryModuleType.LOOK_TARGET);
         }
 
-        // --- 1. SCAN HOUSES & INSTANT ASSIGNMENT ON LOAD ---
+        // --- 2. SCAN HOUSES & INSTANT ASSIGNMENT ON LOAD ---
         if (villager.tickCount % 40 == 0) {
             BlockPos villagerPos = villager.blockPosition();
             BlockPos.MutableBlockPos mutPos = new BlockPos.MutableBlockPos();
@@ -68,7 +75,7 @@ public class VillageEventHandler {
             houseData.autoAssignLoadedVillagers(level);
         }
 
-        // --- 2. DOOR LOGIC & HOUSE BOUNDARIES ---
+        // --- 3. DOOR & NIGHT BOUNDARY LOGIC ---
         for (House house : houseData.getAllHouses()) {
             if (house.doorPos != null) {
                 BlockState doorState = level.getBlockState(house.doorPos);
@@ -89,11 +96,17 @@ public class VillageEventHandler {
 
                         if (isInside) {
                             if (level.isNight()) {
-                                // AT NIGHT: Keep door closed so residents inside stay inside
-                                closeDoorIfOpen(level, lowerDoorPos);
-
-                                if (!isOwnerOrBaby) {
-                                    // Evict non-owners inside at night
+                                if (isOwnerOrBaby) {
+                                    // Soft boundary: Cancel movement if they try to path outside at night
+                                    if (villager.getNavigation().getPath() != null) {
+                                        BlockPos targetPos = villager.getNavigation().getPath().getTarget();
+                                        if (targetPos.distSqr(houseCenter) >= doorDistToCenter) {
+                                            villager.getNavigation().stop();
+                                            villager.getBrain().eraseMemory(MemoryModuleType.WALK_TARGET);
+                                        }
+                                    }
+                                } else {
+                                    // Evict non-owners trapped inside at night
                                     BlockPos outsidePos = lowerDoorPos.offset(
                                         lowerDoorPos.getX() - houseCenter.getX(),
                                         0,
@@ -102,7 +115,7 @@ public class VillageEventHandler {
                                     villager.getNavigation().moveTo(outsidePos.getX(), outsidePos.getY(), outsidePos.getZ(), 0.5D);
                                 }
                             } else {
-                                // DAYTIME: Owners and babies can open doors to head out
+                                // DAYTIME: Owners and babies open doors when leaving
                                 if (isOwnerOrBaby) {
                                     openDoorIfClosed(level, lowerDoorPos);
                                 }
@@ -110,10 +123,9 @@ public class VillageEventHandler {
                         } else {
                             // OUTSIDE LOGIC
                             if (isOwnerOrBaby) {
-                                // Owners and babies outside can open doors to enter
                                 openDoorIfClosed(level, lowerDoorPos);
                             } else {
-                                // Non-owners outside: CANNOT open door & stop targeting
+                                // Non-owners outside: Prevent door opening & cancel entry paths
                                 if (villager.getNavigation().getPath() != null) {
                                     BlockPos targetPos = villager.getNavigation().getPath().getTarget();
                                     if (targetPos.distSqr(houseCenter) < 16.0) {
@@ -128,7 +140,7 @@ public class VillageEventHandler {
             }
         }
 
-        // --- 3. BABY VILLAGER MANAGEMENT ---
+        // --- 4. BABY VILLAGER MANAGEMENT ---
         if (villager.isBaby()) {
             if (!BABY_PARENT_MAP.containsKey(villagerId)) {
                 List<Villager> nearby = level.getEntitiesOfClass(
@@ -162,7 +174,6 @@ public class VillageEventHandler {
                 BlockPos targetPos = parentHouse.bedPos != null ? parentHouse.bedPos : parentHouse.homePos;
 
                 if (level.isNight()) {
-                    // AT NIGHT: Baby goes into parent's house and stays inside
                     double distSqrToHouse = villager.blockPosition().distSqr(targetPos);
                     if (distSqrToHouse > 3.0) {
                         if (villager.tickCount % 20 == 0) {
@@ -170,25 +181,23 @@ public class VillageEventHandler {
                             villager.getNavigation().moveTo(targetPos.getX(), targetPos.getY(), targetPos.getZ(), 0.5D);
                         }
                     } else {
-                        // Already inside house, stop walking around
+                        // Already inside house center, stay put
                         villager.getNavigation().stop();
                         villager.getBrain().eraseMemory(MemoryModuleType.WALK_TARGET);
                     }
                 } else {
-                    // DAYTIME: Follow parent with a comfortable buffer distance so they don't face-lock
+                    // DAYTIME: Follow parent with buffer distance
                     if (parent != null) {
                         double distSqrToParent = villager.distanceToSqr(parent);
                         if (distSqrToParent > 16.0 && villager.tickCount % 40 == 0) {
                             villager.getNavigation().moveTo(parent, 0.5D);
                         } else if (distSqrToParent <= 9.0) {
-                            // Close enough, stop pushing directly into parent's face
                             villager.getNavigation().stop();
                             villager.getBrain().eraseMemory(MemoryModuleType.WALK_TARGET);
                         }
                     }
                 }
             } else if (level.isNight()) {
-                // Baby without parent house stays put at night
                 villager.getNavigation().stop();
                 villager.getBrain().eraseMemory(MemoryModuleType.WALK_TARGET);
             }
@@ -196,7 +205,7 @@ public class VillageEventHandler {
             return;
         }
 
-        // --- 4. ADULT VILLAGER NAMING & NIGHT SLEEPING ---
+        // --- 5. ADULT VILLAGER NAMING & NIGHT SLEEPING ---
         House assignedHouse = houseData.getHouseForVillager(villagerId);
 
         if (assignedHouse != null) {
@@ -214,13 +223,15 @@ public class VillageEventHandler {
 
                 if (assignedHouse.bedPos != null && level.getBlockState(assignedHouse.bedPos).is(BlockTags.BEDS)) {
                     if (distSqr <= 3.0 && !villager.isSleeping()) {
+                        villager.getNavigation().stop();
+                        villager.getBrain().eraseMemory(MemoryModuleType.WALK_TARGET);
                         villager.startSleeping(assignedHouse.bedPos);
                     } else if (!villager.isSleeping() && villager.tickCount % 40 == 0) {
                         villager.getBrain().setMemory(MemoryModuleType.WALK_TARGET, new WalkTarget(targetPos, 0.5F, 1));
                         villager.getNavigation().moveTo(targetPos.getX(), targetPos.getY(), targetPos.getZ(), 0.5D);
                     }
                 } else {
-                    // House without bed: Move inside and stay inside at night
+                    // Bedless house: Move inside and stay inside at night
                     if (distSqr > 3.0) {
                         if (villager.tickCount % 40 == 0) {
                             villager.getBrain().setMemory(MemoryModuleType.WALK_TARGET, new WalkTarget(targetPos, 0.5F, 1));
@@ -262,15 +273,6 @@ public class VillageEventHandler {
         if (state.getBlock() instanceof DoorBlock) {
             if (!state.getValue(DoorBlock.OPEN)) {
                 level.setBlock(doorPos, state.setValue(DoorBlock.OPEN, true), 3);
-            }
-        }
-    }
-
-    private static void closeDoorIfOpen(ServerLevel level, BlockPos doorPos) {
-        BlockState state = level.getBlockState(doorPos);
-        if (state.getBlock() instanceof DoorBlock) {
-            if (state.getValue(DoorBlock.OPEN)) {
-                level.setBlock(doorPos, state.setValue(DoorBlock.OPEN, false), 3);
             }
         }
     }
