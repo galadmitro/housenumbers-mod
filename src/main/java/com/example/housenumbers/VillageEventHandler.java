@@ -29,7 +29,6 @@ public class VillageEventHandler {
 
         // --- 1. BABY VILLAGER LOGIC ---
         if (villager.isBaby()) {
-            // Only update baby pathing once every 30 ticks to prevent jittering/teleporting
             if (villager.tickCount % 30 == 0) {
                 List<Villager> adults = level.getEntitiesOfClass(
                     Villager.class,
@@ -46,7 +45,6 @@ public class VillageEventHandler {
                         villager.setCustomNameVisible(true);
                     }
 
-                    // Smooth walking follow without teleporting
                     if (villager.distanceToSqr(parent) > 16.0 && villager.getNavigation().isDone()) {
                         villager.getNavigation().moveTo(parent, 1.0D);
                     }
@@ -61,10 +59,8 @@ public class VillageEventHandler {
         if (assignedHouse == null) {
             BlockPos villagerPos = villager.blockPosition();
 
-            // Unique village identifier based on region coordinates (resets to #1 in distant villages)
             String villageId = "village_" + (villagerPos.getX() >> 8) + "_" + (villagerPos.getZ() >> 8);
 
-            // Scan 12 blocks around villager for beds to define a unique house structure
             List<BlockPos> bedsInHouse = new ArrayList<>();
             BlockPos.MutableBlockPos mutPos = new BlockPos.MutableBlockPos();
 
@@ -80,7 +76,6 @@ public class VillageEventHandler {
             }
 
             if (!bedsInHouse.isEmpty()) {
-                // Calculate actual house center from the bed positions inside the building
                 long sumX = 0, sumY = 0, sumZ = 0;
                 for (BlockPos b : bedsInHouse) {
                     sumX += b.getX();
@@ -101,13 +96,11 @@ public class VillageEventHandler {
             villager.setCustomName(Component.literal("House #" + assignedHouse.houseNumber));
             villager.setCustomNameVisible(true);
 
-            // Override Vanilla memory so beds aren't needed to maintain home persistence
             villager.getBrain().setMemory(
                 MemoryModuleType.HOME,
                 GlobalPos.of(level.dimension(), assignedHouse.centerPos)
             );
 
-            // Only issue navigation orders every 40 ticks (2 seconds) to keep walking smooth
             if (level.isNight() && villager.tickCount % 40 == 0) {
                 double distSqr = villager.blockPosition().distSqr(assignedHouse.centerPos);
 
