@@ -45,14 +45,14 @@ public class VillageEventHandler {
         HouseNumberData houseData = HouseNumberData.get(level);
         UUID villagerId = villager.getUUID();
 
-        // --- IMMEDIATE VILLAGE / HOUSE SCANNING ON LOAD ---
+        // --- EXPANDED HOUSE & BED SCANNING ---
         if (houseData.getHouseForVillager(villagerId) == null || villager.tickCount % 20 == 0) {
             BlockPos villagerPos = villager.blockPosition();
             BlockPos.MutableBlockPos mutPos = new BlockPos.MutableBlockPos();
 
-            for (int x = -24; x <= 24; x += 2) {
-                for (int y = -8; y <= 8; y += 2) {
-                    for (int z = -24; z <= 24; z += 2) {
+            for (int x = -32; x <= 32; x += 3) {
+                for (int y = -10; y <= 10; y += 2) {
+                    for (int z = -32; z <= 32; z += 3) {
                         mutPos.set(villagerPos.getX() + x, villagerPos.getY() + y, villagerPos.getZ() + z);
                         BlockState state = level.getBlockState(mutPos);
 
@@ -63,20 +63,19 @@ public class VillageEventHandler {
                             }
                             if (isHead) {
                                 BlockPos bedPos = mutPos.immutable();
-                                if (houseData.findExistingHouseAt(bedPos) == null) {
-                                    BlockPos doorPos = findDoorNear(level, bedPos);
-                                    int capacity = countBedsInStructure(level, bedPos);
-                                    houseData.registerHouse(level, bedPos, bedPos, doorPos != null ? doorPos : bedPos, capacity);
-                                }
+                                int capacity = countBedsInStructure(level, bedPos);
+                                BlockPos doorPos = findDoorNear(level, bedPos);
+                                houseData.registerHouse(level, bedPos, bedPos, doorPos != null ? doorPos : bedPos, capacity);
                             }
                         }
                     }
                 }
             }
+            // Auto-assign any homeless villagers immediately
             houseData.autoAssignLoadedVillagers(level);
         }
 
-        // --- PREVENT NON-OWNERS FROM PATHING INTO UNOWNED HOUSES ---
+        // --- PREVENT NON-OWNERS FROM ENTERING UNOWNED HOUSES ---
         if (villager.getNavigation().getPath() != null) {
             BlockPos targetPos = villager.getNavigation().getPath().getTarget();
             House targetHouse = houseData.findExistingHouseAt(targetPos);
@@ -100,7 +99,7 @@ public class VillageEventHandler {
 
                     double distSqrToDoor = villager.distanceToSqr(lowerDoorPos.getX() + 0.5, lowerDoorPos.getY(), lowerDoorPos.getZ() + 0.5);
 
-                    if (distSqrToDoor <= 4.0) {
+                    if (distSqrToDoor <= 6.0) {
                         BlockPos houseCenter = house.bedPos != null ? house.bedPos : house.homePos;
                         double villagerDistToCenter = villager.blockPosition().distSqr(houseCenter);
                         double doorDistToCenter = lowerDoorPos.distSqr(houseCenter);
@@ -177,7 +176,6 @@ public class VillageEventHandler {
             }
 
             if (parentHouse != null) {
-                // Apply Baby Nametag
                 villager.setCustomName(Component.literal("Baby (House #" + parentHouse.houseNumber + ")"));
                 villager.setCustomNameVisible(true);
 
@@ -210,7 +208,6 @@ public class VillageEventHandler {
         House assignedHouse = houseData.getHouseForVillager(villagerId);
 
         if (assignedHouse != null) {
-            // Apply Adult House Nametag
             villager.setCustomName(Component.literal("House #" + assignedHouse.houseNumber));
             villager.setCustomNameVisible(true);
 
@@ -228,14 +225,14 @@ public class VillageEventHandler {
                         villager.getNavigation().stop();
                         villager.getBrain().eraseMemory(MemoryModuleType.WALK_TARGET);
                         villager.startSleeping(assignedHouse.bedPos);
-                    } else if (!villager.isSleeping() && villager.tickCount % 40 == 0) {
-                        villager.getBrain().setMemory(MemoryModuleType.WALK_TARGET, new WalkTarget(targetPos, 0.5F, 1));
-                        villager.getNavigation().moveTo(targetPos.getX(), targetPos.getY(), targetPos.getZ(), 0.5D);
+                    } else if (!villager.isSleeping() && villager.tickCount % 20 == 0) {
+                        villager.getBrain().setMemory(MemoryModuleType.WALK_TARGET, new WalkTarget(targetPos, 0.6F, 1));
+                        villager.getNavigation().moveTo(targetPos.getX(), targetPos.getY(), targetPos.getZ(), 0.6D);
                     }
                 } else {
-                    if (distSqr > 4.0 && villager.tickCount % 40 == 0) {
-                        villager.getBrain().setMemory(MemoryModuleType.WALK_TARGET, new WalkTarget(targetPos, 0.5F, 1));
-                        villager.getNavigation().moveTo(targetPos.getX(), targetPos.getY(), targetPos.getZ(), 0.5D);
+                    if (distSqr > 4.0 && villager.tickCount % 20 == 0) {
+                        villager.getBrain().setMemory(MemoryModuleType.WALK_TARGET, new WalkTarget(targetPos, 0.6F, 1));
+                        villager.getNavigation().moveTo(targetPos.getX(), targetPos.getY(), targetPos.getZ(), 0.6D);
                     }
                 }
             }
@@ -271,9 +268,9 @@ public class VillageEventHandler {
 
     private static BlockPos findDoorNear(ServerLevel level, BlockPos pos) {
         BlockPos.MutableBlockPos mutPos = new BlockPos.MutableBlockPos();
-        for (int x = -5; x <= 5; x++) {
-            for (int y = -2; y <= 2; y++) {
-                for (int z = -5; z <= 5; z++) {
+        for (int x = -6; x <= 6; x++) {
+            for (int y = -3; y <= 3; y++) {
+                for (int z = -6; z <= 6; z++) {
                     mutPos.set(pos.getX() + x, pos.getY() + y, pos.getZ() + z);
                     if (level.getBlockState(mutPos).is(BlockTags.DOORS)) {
                         return mutPos.immutable();
