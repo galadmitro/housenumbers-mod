@@ -30,14 +30,20 @@ public class VillageEventHandler {
         // --- 1. BABY VILLAGER LOGIC ---
         if (villager.isBaby()) {
             if (villager.tickCount % 30 == 0) {
-                List<Villager> adults = level.getEntitiesOfClass(
+                List<Villager> nearby = level.getEntitiesOfClass(
                     Villager.class,
-                    villager.getBoundingBox().inflate(12.0),
-                    v -> !v.isBaby()
+                    villager.getBoundingBox().inflate(12.0)
                 );
 
-                if (!adults.isEmpty()) {
-                    Villager parent = adults.get(0);
+                Villager parent = null;
+                for (Villager v : nearby) {
+                    if (!v.isBaby()) {
+                        parent = v;
+                        break;
+                    }
+                }
+
+                if (parent != null) {
                     HouseNumberData.House parentHouse = houseData.getHouseForVillager(parent.getUUID());
 
                     if (parentHouse != null) {
