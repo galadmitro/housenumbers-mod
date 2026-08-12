@@ -65,7 +65,8 @@ public class VillageEventHandler {
                                 BlockPos bedPos = mutPos.immutable();
                                 if (houseData.findExistingHouseAt(bedPos) == null) {
                                     BlockPos doorPos = findDoorNear(level, bedPos);
-                                    houseData.registerHouse(level, bedPos, bedPos, doorPos != null ? doorPos : bedPos, 1);
+                                    int capacity = countBedsInStructure(level, bedPos);
+                                    houseData.registerHouse(level, bedPos, bedPos, doorPos != null ? doorPos : bedPos, capacity);
                                 }
                             }
                         }
@@ -148,7 +149,7 @@ public class VillageEventHandler {
             }
         }
 
-        // --- BABY VILLAGER MANAGEMENT ---
+        // --- BABY VILLAGER MANAGEMENT & NAMETAGS ---
         if (villager.isBaby()) {
             if (!BABY_PARENT_MAP.containsKey(villagerId)) {
                 List<Villager> nearby = level.getEntitiesOfClass(
@@ -176,6 +177,7 @@ public class VillageEventHandler {
             }
 
             if (parentHouse != null) {
+                // Apply Baby Nametag
                 villager.setCustomName(Component.literal("Baby (House #" + parentHouse.houseNumber + ")"));
                 villager.setCustomNameVisible(true);
 
@@ -204,10 +206,11 @@ public class VillageEventHandler {
             return;
         }
 
-        // --- ADULT VILLAGER NAMING & NIGHT SLEEPING ---
+        // --- ADULT VILLAGER NAMETAGS & NIGHT SLEEPING ---
         House assignedHouse = houseData.getHouseForVillager(villagerId);
 
         if (assignedHouse != null) {
+            // Apply Adult House Nametag
             villager.setCustomName(Component.literal("House #" + assignedHouse.houseNumber));
             villager.setCustomNameVisible(true);
 
@@ -244,6 +247,26 @@ public class VillageEventHandler {
                 villager.stopSleeping();
             }
         }
+    }
+
+    private static int countBedsInStructure(ServerLevel level, BlockPos origin) {
+        int count = 0;
+        BlockPos.MutableBlockPos mut = new BlockPos.MutableBlockPos();
+        for (int x = -6; x <= 6; x++) {
+            for (int y = -3; y <= 3; y++) {
+                for (int z = -6; z <= 6; z++) {
+                    mut.set(origin.getX() + x, origin.getY() + y, origin.getZ() + z);
+                    BlockState state = level.getBlockState(mut);
+                    if (state.is(BlockTags.BEDS)) {
+                        boolean isHead = !state.hasProperty(BedBlock.PART) || state.getValue(BedBlock.PART) == BedPart.HEAD;
+                        if (isHead) {
+                            count++;
+                        }
+                    }
+                }
+            }
+        }
+        return Math.max(1, count);
     }
 
     private static BlockPos findDoorNear(ServerLevel level, BlockPos pos) {
