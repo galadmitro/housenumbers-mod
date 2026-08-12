@@ -31,7 +31,7 @@ public class HouseNumberData extends SavedData {
         public final BlockPos homePos;
         public final BlockPos bedPos;
         public final BlockPos doorPos;
-        public final Vec3 roofCenterPos;
+        public Vec3 roofCenterPos;
         public final int maxCapacity;
         public final Set<UUID> assignedVillagers = new HashSet<>();
 
@@ -96,7 +96,7 @@ public class HouseNumberData extends SavedData {
     public House findExistingHouseAt(BlockPos pos) {
         for (House house : registeredHouses) {
             BlockPos target = house.bedPos != null ? house.bedPos : house.homePos;
-            if (target.closerThan(pos, 6.0)) {
+            if (target.closerThan(pos, 8.0)) {
                 return house;
             }
         }
@@ -160,10 +160,10 @@ public class HouseNumberData extends SavedData {
         return null;
     }
 
-    // Guarantees all homeless villagers in the world get assigned to available houses
+    // Immediately pairs all homeless villagers with unassigned houses upon world/village loading
     public void autoAssignLoadedVillagers(ServerLevel level) {
         List<? extends Villager> villagers = level.getEntities(EntityType.VILLAGER, v -> !v.isBaby() && getHouseForVillager(v.getUUID()) == null);
-        
+
         for (Villager villager : villagers) {
             BlockPos villagerPos = villager.blockPosition();
             House bestHouse = null;
@@ -186,49 +186,66 @@ public class HouseNumberData extends SavedData {
         }
     }
 
-    // Precise roof detection: Filters out dirt, grass, plants, and terrain
+    // Accurate roof centering: Scans upwards to find top roof blocks only, ignoring floor/dirt/pathways
     private Vec3 calculateRoofCenter(ServerLevel level, BlockPos origin) {
-        int minX = Integer.MAX_VALUE, maxX = Integer.MIN_VALUE;
-        int minZ = Integer.MAX_VALUE, maxZ = Integer.MIN_VALUE;
-        int maxY = origin.getY();
-        boolean foundRoofBlock = false;
-
+        int highestY = origin.getY();
         BlockPos.MutableBlockPos mut = new BlockPos.MutableBlockPos();
-        for (int x = -6; x <= 6; x++) {
-            for (int z = -6; z <= 6; z++) {
-                for (int y = 0; y <= 8; y++) {
+
+        // 1. Find the highest roof Y level
+        for (int x = -7; x <= 7; x++) {
+            for (int z = -7; z <= 7; z++) {
+                for (int y = 0; y <= 12; y++) {
                     mut.set(origin.getX() + x, origin.getY() + y, origin.getZ() + z);
                     BlockState state = level.getBlockState(mut);
-
-                    if (!state.isAir() && isHouseStructureBlock(state)) {
-                        minX = Math.min(minX, mut.getX());
-                        maxX = Math.max(maxX, mut.getX());
-                        minZ = Math.min(minZ, mut.getZ());
-                        maxZ = Math.max(maxZ, mut.getZ());
-                        maxY = Math.max(maxY, mut.getY());
-                        foundRoofBlock = true;
+                    if (isHouseStructureBlock(state)) {
+                        highestY = Math.max(highestY, mut.getY());
                     }
                 }
             }
         }
 
-        if (!foundRoofBlock) {
-            return new Vec3(origin.getX() + 0.5, origin.getY() + 3.0, origin.getZ() + 0.5);
+        // 2. Average X and Z for the roof peak layers (top 2 Y levels)
+        int minX = Integer.MAX_VALUE, maxX = Integer.MIN_VALUE;
+        int minZ = Integer.MAX_VALUE, maxZ = Integer.MIN_VALUE;
+        boolean foundPeak = false;
+
+        for (int x = -7; x <= 7; x++) {
+            for (int z = -7; z <= 7; z++) {
+                for (int y = Math.max(origin.getY(), highestY - 2); y <= highestY; y++) {
+                    mut.set(origin.getX() + x, y, origin.getZ() + z);
+                    BlockState state = level.getBlockState(mut);
+                    if (isHouseStructureBlock(state)) {
+                        minX = Math.min(minX, mut.getX());
+                        maxX = Math.max(maxX, mut.getX());
+                        minZ = Math.min(minZ, mut.getZ());
+                        maxZ = Math.max(maxZ, mut.getZ());
+                        foundPeak = true;
+                    }
+                }
+            }
+        }
+
+        if (!foundPeak) {
+            return new Vec3(origin.getX() + 0.5, origin.getY() + 3.5, origin.getZ() + 0.5);
         }
 
         double centerX = (minX + maxX) / 2.0 + 0.5;
         double centerZ = (minZ + maxZ) / 2.0 + 0.5;
-        double topY = maxY + 1.2;
+        double topY = highestY + 1.2;
 
         return new Vec3(centerX, topY, centerZ);
     }
 
     private boolean isHouseStructureBlock(BlockState state) {
-        if (state.is(net.minecraft.world.level.block.Blocks.DIRT) ||
+        if (state.isAir() ||
+            state.is(net.minecraft.world.level.block.Blocks.DIRT) ||
             state.is(net.minecraft.world.level.block.Blocks.GRASS_BLOCK) ||
             state.is(net.minecraft.world.level.block.Blocks.DIRT_PATH) ||
             state.is(net.minecraft.world.level.block.Blocks.FARMLAND) ||
             state.is(net.minecraft.world.level.block.Blocks.STONE) ||
+            state.is(net.minecraft.world.level.block.Blocks.COBBLESTONE) ||
+            state.is(net.minecraft.world.level.block.Blocks.GRAVEL) ||
+            state.is(net.minecraft.world.level.block.Blocks.SAND) ||
             state.is(net.minecraft.world.level.block.Blocks.SHORT_GRASS) ||
             state.is(net.minecraft.world.level.block.Blocks.TALL_GRASS) ||
             state.is(BlockTags.LEAVES) ||
@@ -236,7 +253,13 @@ public class HouseNumberData extends SavedData {
             state.is(BlockTags.BEDS)) {
             return false;
         }
-        return state.isSolid() || state.getBlock() instanceof StairBlock || state.getBlock() instanceof SlabBlock;
+
+        return state.getBlock() instanceof StairBlock ||
+               state.getBlock() instanceof SlabBlock ||
+               state.is(BlockTags.PLANKS) ||
+               state.is(BlockTags.LOGS) ||
+               state.is(BlockTags.TERRACOTTA) ||
+               state.is(BlockTags.WOOL);
     }
 
     private void spawnHouseTag(ServerLevel level, House house) {
