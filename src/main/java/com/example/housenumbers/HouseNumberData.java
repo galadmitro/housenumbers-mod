@@ -21,14 +21,14 @@ public class HouseNumberData extends SavedData {
     public static class House {
         public final String villageId;
         public final int houseNumber;
-        public final BlockPos centerPos;
+        public final BlockPos bedPos;
         public final int maxCapacity;
         public final Set<UUID> assignedVillagers = new HashSet<>();
 
-        public House(String villageId, int houseNumber, BlockPos centerPos, int maxCapacity) {
+        public House(String villageId, int houseNumber, BlockPos bedPos, int maxCapacity) {
             this.villageId = villageId;
             this.houseNumber = houseNumber;
-            this.centerPos = centerPos;
+            this.bedPos = bedPos;
             this.maxCapacity = maxCapacity;
         }
     }
@@ -47,19 +47,22 @@ public class HouseNumberData extends SavedData {
         );
     }
 
-    public House findOrRegisterHouse(ServerLevel level, String villageId, BlockPos housePos, int bedCount) {
+    public House findOrRegisterHouse(ServerLevel level, String villageId, BlockPos bedPos, int bedCount) {
+        // If a house is already registered around this exact bed (within 5 blocks), return existing house
         for (House house : registeredHouses) {
-            if (house.villageId.equals(villageId) && house.centerPos.closerThan(housePos, 10)) {
+            if (house.villageId.equals(villageId) && house.bedPos.closerThan(bedPos, 5)) {
                 return house;
             }
         }
 
+        // Assign a strict sequential house number per village region
         int nextNumber = villageHouseCounters.getOrDefault(villageId, 0) + 1;
         villageHouseCounters.put(villageId, nextNumber);
 
-        House newHouse = new House(villageId, nextNumber, housePos, Math.max(1, bedCount));
+        House newHouse = new House(villageId, nextNumber, bedPos, Math.max(1, bedCount));
         registeredHouses.add(newHouse);
         
+        // Spawn floating house tag directly above the house roof
         spawnHouseTag(level, newHouse);
 
         setDirty();
@@ -88,8 +91,12 @@ public class HouseNumberData extends SavedData {
     }
 
     private void spawnHouseTag(ServerLevel level, House house) {
-        BlockPos tagPos = house.centerPos.above(3);
-        
+        // Find roof height directly above the bed position
+        BlockPos tagPos = house.bedPos.above(4);
+        while (level.getBlockState(tagPos).isSolid() && tagPos.getY() < level.getMaxBuildHeight()) {
+            tagPos = tagPos.above();
+        }
+
         AABB searchBox = new AABB(tagPos).inflate(2.0);
         List<ArmorStand> existingStands = level.getEntitiesOfClass(ArmorStand.class, searchBox);
         
@@ -103,7 +110,7 @@ public class HouseNumberData extends SavedData {
 
         if (!alreadyExists) {
             ArmorStand marker = new ArmorStand(EntityType.ARMOR_STAND, level);
-            marker.setPos(tagPos.getX() + 0.5, tagPos.getY() + 0.5, tagPos.getZ() + 0.5);
+            marker.setPos(tagPos.getX() + 0.5, tagPos.getY() + 0.2, tagPos.getZ() + 0.5);
             marker.setCustomName(Component.literal("House #" + house.houseNumber));
             marker.setCustomNameVisible(true);
             marker.setInvisible(true);
@@ -141,7 +148,7 @@ public class HouseNumberData extends SavedData {
             CompoundTag hTag = new CompoundTag();
             hTag.putString("VillageId", house.villageId);
             hTag.putInt("Number", house.houseNumber);
-            hTag.putLong("Pos", house.centerPos.asLong());
+            hTag.putLong("Pos", house.bedPos.asLong());
             hTag.putInt("Capacity", house.maxCapacity);
 
             hTag.putInt("VillagerCount", house.assignedVillagers.size());
