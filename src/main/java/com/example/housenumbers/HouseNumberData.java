@@ -5,8 +5,12 @@ import net.minecraft.core.HolderLookup;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.Tag;
+import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.entity.Display;
+import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.level.saveddata.SavedData;
+import net.minecraft.world.phys.AABB;
 
 import java.util.*;
 
@@ -42,18 +46,24 @@ public class HouseNumberData extends SavedData {
         );
     }
 
-    public House findOrRegisterHouse(String villageId, BlockPos structurePos, int bedCount) {
+    public House findOrRegisterHouse(ServerLevel level, String villageId, BlockPos housePos, int bedCount) {
+        // If a house is already registered within 10 blocks, return it
         for (House house : registeredHouses) {
-            if (house.villageId.equals(villageId) && house.centerPos.closerThan(structurePos, 16)) {
+            if (house.villageId.equals(villageId) && house.centerPos.closerThan(housePos, 10)) {
                 return house;
             }
         }
 
+        // Increment village-specific house count (#1, #2, #3...)
         int nextNumber = villageHouseCounters.getOrDefault(villageId, 0) + 1;
         villageHouseCounters.put(villageId, nextNumber);
 
-        House newHouse = new House(villageId, nextNumber, structurePos, Math.max(1, bedCount));
+        House newHouse = new House(villageId, nextNumber, housePos, Math.max(1, bedCount));
         registeredHouses.add(newHouse);
+        
+        // Spawn floating house tag above the building roof
+        spawnHouseTag(level, newHouse);
+
         setDirty();
         return newHouse;
     }
@@ -77,6 +87,26 @@ public class HouseNumberData extends SavedData {
             }
         }
         return null;
+    }
+
+    private void spawnHouseTag(ServerLevel level, House house) {
+        BlockPos tagPos = house.centerPos.above(3);
+        
+        // Prevent duplicate text displays
+        List<Display.TextDisplay> existing = level.getEntitiesOfClass(
+            Display.TextDisplay.class,
+            new AABB(tagPos).inflate(2.0),
+            e -> e.getCustomName() != null && e.getCustomName().getString().contains("House #")
+        );
+
+        if (existing.isEmpty()) {
+            Display.TextDisplay textDisplay = new Display.TextDisplay(EntityType.TEXT_DISPLAY, level);
+            textDisplay.setPos(tagPos.getX() + 0.5, tagPos.getY() + 0.5, tagPos.getZ() + 0.5);
+            textDisplay.setText(Component.literal("House #" + house.houseNumber));
+            textDisplay.setBillboardConstraints(Display.BillboardConstraints.CENTER);
+            textDisplay.setSeeThrough(true);
+            level.addFreshEntity(textDisplay);
+        }
     }
 
     public static HouseNumberData load(CompoundTag tag, HolderLookup.Provider registries) {
