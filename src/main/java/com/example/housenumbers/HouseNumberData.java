@@ -7,10 +7,13 @@ import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.Tag;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.tags.BlockTags;
 import net.minecraft.util.datafix.DataFixTypes;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.decoration.ArmorStand;
 import net.minecraft.world.entity.npc.Villager;
+import net.minecraft.world.level.block.SlabBlock;
+import net.minecraft.world.level.block.StairBlock;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.saveddata.SavedData;
 import net.minecraft.world.phys.AABB;
@@ -20,7 +23,7 @@ import java.util.*;
 
 public class HouseNumberData extends SavedData {
     private static final String DATA_NAME = "house_number_data";
-    public static final double VILLAGE_RADIUS = 64.0; // Radius threshold to cluster a village
+    public static final double VILLAGE_RADIUS = 64.0;
 
     public static class House {
         public final int villageId;
@@ -157,41 +160,60 @@ public class HouseNumberData extends SavedData {
         return null;
     }
 
-    // Assigns homeless villagers ONLY to available houses in their local village radius
+    // Guarantees all homeless villagers in the world get assigned to available houses
     public void autoAssignLoadedVillagers(ServerLevel level) {
         List<? extends Villager> villagers = level.getEntities(EntityType.VILLAGER, v -> !v.isBaby() && getHouseForVillager(v.getUUID()) == null);
+        
         for (Villager villager : villagers) {
             BlockPos villagerPos = villager.blockPosition();
+            House bestHouse = null;
+            double bestDistSqr = Double.MAX_VALUE;
+
             for (House house : registeredHouses) {
-                BlockPos housePos = house.bedPos != null ? house.bedPos : house.homePos;
-                if (housePos.closerThan(villagerPos, VILLAGE_RADIUS) && !house.isFull()) {
-                    assignVillagerToHouse(villager.getUUID(), house);
-                    break;
+                if (!house.isFull()) {
+                    BlockPos housePos = house.bedPos != null ? house.bedPos : house.homePos;
+                    double distSqr = housePos.distSqr(villagerPos);
+                    if (distSqr < bestDistSqr) {
+                        bestDistSqr = distSqr;
+                        bestHouse = house;
+                    }
                 }
+            }
+
+            if (bestHouse != null) {
+                assignVillagerToHouse(villager.getUUID(), bestHouse);
             }
         }
     }
 
+    // Precise roof detection: Filters out dirt, grass, plants, and terrain
     private Vec3 calculateRoofCenter(ServerLevel level, BlockPos origin) {
-        int minX = origin.getX(), maxX = origin.getX();
-        int minZ = origin.getZ(), maxZ = origin.getZ();
+        int minX = Integer.MAX_VALUE, maxX = Integer.MIN_VALUE;
+        int minZ = Integer.MAX_VALUE, maxZ = Integer.MIN_VALUE;
         int maxY = origin.getY();
+        boolean foundRoofBlock = false;
 
         BlockPos.MutableBlockPos mut = new BlockPos.MutableBlockPos();
-        for (int x = -5; x <= 5; x++) {
-            for (int z = -5; z <= 5; z++) {
+        for (int x = -6; x <= 6; x++) {
+            for (int z = -6; z <= 6; z++) {
                 for (int y = 0; y <= 8; y++) {
                     mut.set(origin.getX() + x, origin.getY() + y, origin.getZ() + z);
                     BlockState state = level.getBlockState(mut);
-                    if (!state.isAir()) {
+
+                    if (!state.isAir() && isHouseStructureBlock(state)) {
                         minX = Math.min(minX, mut.getX());
                         maxX = Math.max(maxX, mut.getX());
                         minZ = Math.min(minZ, mut.getZ());
                         maxZ = Math.max(maxZ, mut.getZ());
                         maxY = Math.max(maxY, mut.getY());
+                        foundRoofBlock = true;
                     }
                 }
             }
+        }
+
+        if (!foundRoofBlock) {
+            return new Vec3(origin.getX() + 0.5, origin.getY() + 3.0, origin.getZ() + 0.5);
         }
 
         double centerX = (minX + maxX) / 2.0 + 0.5;
@@ -201,26 +223,45 @@ public class HouseNumberData extends SavedData {
         return new Vec3(centerX, topY, centerZ);
     }
 
+    private boolean isHouseStructureBlock(BlockState state) {
+        if (state.is(net.minecraft.world.level.block.Blocks.DIRT) ||
+            state.is(net.minecraft.world.level.block.Blocks.GRASS_BLOCK) ||
+            state.is(net.minecraft.world.level.block.Blocks.DIRT_PATH) ||
+            state.is(net.minecraft.world.level.block.Blocks.FARMLAND) ||
+            state.is(net.minecraft.world.level.block.Blocks.STONE) ||
+            state.is(net.minecraft.world.level.block.Blocks.SHORT_GRASS) ||
+            state.is(net.minecraft.world.level.block.Blocks.TALL_GRASS) ||
+            state.is(BlockTags.LEAVES) ||
+            state.is(BlockTags.FLOWERS) ||
+            state.is(BlockTags.BEDS)) {
+            return false;
+        }
+        return state.isSolid() || state.getBlock() instanceof StairBlock || state.getBlock() instanceof SlabBlock;
+    }
+
     private void spawnHouseTag(ServerLevel level, House house) {
         Vec3 tagPos = house.roofCenterPos;
-        AABB searchBox = new AABB(new BlockPos((int) tagPos.x, (int) tagPos.y, (int) tagPos.z)).inflate(3.0);
+        AABB searchBox = new AABB(new BlockPos((int) tagPos.x, (int) tagPos.y, (int) tagPos.z)).inflate(8.0);
         List<ArmorStand> existingStands = level.getEntitiesOfClass(ArmorStand.class, searchBox);
 
-        boolean alreadyExists = false;
+        ArmorStand existing = null;
         for (ArmorStand stand : existingStands) {
-            if (stand.getCustomName() != null && stand.getCustomName().getString().contains("House #")) {
-                alreadyExists = true;
+            if (stand.getCustomName() != null && stand.getCustomName().getString().equals("House #" + house.houseNumber)) {
+                existing = stand;
                 break;
             }
         }
 
-        if (!alreadyExists) {
+        if (existing != null) {
+            existing.setPos(tagPos.x, tagPos.y, tagPos.z);
+        } else {
             ArmorStand marker = new ArmorStand(EntityType.ARMOR_STAND, level);
             marker.setPos(tagPos.x, tagPos.y, tagPos.z);
             marker.setCustomName(Component.literal("House #" + house.houseNumber));
             marker.setCustomNameVisible(true);
             marker.setInvisible(true);
             marker.setNoGravity(true);
+            marker.setMarker(true);
             level.addFreshEntity(marker);
         }
     }
