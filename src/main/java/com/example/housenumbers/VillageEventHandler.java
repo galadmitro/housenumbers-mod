@@ -130,7 +130,7 @@ public class VillageEventHandler {
                 villager.setCustomName(Component.literal("Baby (House #" + parentHouse.houseNumber + ")"));
                 villager.setCustomNameVisible(true);
 
-                BlockPos targetPos = parentHouse.getBedForVillager(parentId);
+                BlockPos targetPos = parentHouse.getBedForVillager(BABY_PARENT_MAP.get(villagerId));
 
                 if (level.isNight()) {
                     double distSqrToHouse = villager.blockPosition().distSqr(targetPos);
