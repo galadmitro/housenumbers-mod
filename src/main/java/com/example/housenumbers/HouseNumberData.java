@@ -115,7 +115,7 @@ public class HouseNumberData extends SavedData {
     }
 
     public void autoAssignLoadedVillagers(ServerLevel level) {
-        List<Villager> villagers = level.getEntities(EntityType.VILLAGER, v -> !v.isBaby() && getHouseForVillager(v.getUUID()) == null);
+        List<? extends Villager> villagers = level.getEntities(EntityType.VILLAGER, v -> !v.isBaby() && getHouseForVillager(v.getUUID()) == null);
         for (Villager villager : villagers) {
             for (House house : registeredHouses) {
                 if (!house.isFull()) {
