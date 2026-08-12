@@ -7,6 +7,7 @@ import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.Tag;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.util.datafix.DataFixTypes;
 import net.minecraft.world.entity.Display;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.level.saveddata.SavedData;
@@ -37,31 +38,28 @@ public class HouseNumberData extends SavedData {
 
     public static HouseNumberData get(ServerLevel level) {
         return level.getDataStorage().computeIfAbsent(
-            new SavedData.Factory<>(
+            new SavedData.Factory<HouseNumberData>(
                 HouseNumberData::new,
                 HouseNumberData::load,
-                null
+                (DataFixTypes) null
             ),
             DATA_NAME
         );
     }
 
     public House findOrRegisterHouse(ServerLevel level, String villageId, BlockPos housePos, int bedCount) {
-        // If a house is already registered within 10 blocks, return it
         for (House house : registeredHouses) {
             if (house.villageId.equals(villageId) && house.centerPos.closerThan(housePos, 10)) {
                 return house;
             }
         }
 
-        // Increment village-specific house count (#1, #2, #3...)
         int nextNumber = villageHouseCounters.getOrDefault(villageId, 0) + 1;
         villageHouseCounters.put(villageId, nextNumber);
 
         House newHouse = new House(villageId, nextNumber, housePos, Math.max(1, bedCount));
         registeredHouses.add(newHouse);
         
-        // Spawn floating house tag above the building roof
         spawnHouseTag(level, newHouse);
 
         setDirty();
@@ -92,11 +90,9 @@ public class HouseNumberData extends SavedData {
     private void spawnHouseTag(ServerLevel level, House house) {
         BlockPos tagPos = house.centerPos.above(3);
         
-        // Prevent duplicate text displays
         List<Display.TextDisplay> existing = level.getEntitiesOfClass(
             Display.TextDisplay.class,
-            new AABB(tagPos).inflate(2.0),
-            e -> e.getCustomName() != null && e.getCustomName().getString().contains("House #")
+            new AABB(tagPos).inflate(2.0)
         );
 
         if (existing.isEmpty()) {
