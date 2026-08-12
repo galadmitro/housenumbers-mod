@@ -155,10 +155,13 @@ public class HouseNumberData extends SavedData {
     }
 
     public House registerOrUpdateHouse(ServerLevel level, BlockPos bedPos, BlockPos doorPos) {
-        House existing = findHouseNear(bedPos, 8.0);
+        // Increased merge radius to 14.0 blocks to properly merge multi-bed & multi-story houses
+        House existing = findHouseNear(bedPos, 14.0);
         if (existing != null) {
             existing.addBed(bedPos);
-            if (doorPos != null) existing.doorPos = doorPos;
+            if (doorPos != null && existing.doorPos == existing.homePos) {
+                existing.doorPos = doorPos;
+            }
             existing.roofCenterPos = calculateRoofCenter(level, existing.homePos);
             spawnOrUpdateHouseTag(level, existing);
             setDirty();
@@ -238,30 +241,36 @@ public class HouseNumberData extends SavedData {
         for (Villager villager : villagers) {
             BlockPos villagerPos = villager.blockPosition();
             UUID vId = villager.getUUID();
-
             Integer assignedVillageId = villagerVillageMap.get(vId);
-            if (assignedVillageId == null) {
-                VillageCluster nearCluster = findClusterNear(villagerPos);
-                if (nearCluster != null) {
-                    assignedVillageId = nearCluster.villageId;
-                    villagerVillageMap.put(vId, assignedVillageId);
-                }
-            }
 
             House bestHouse = null;
             double bestDistSqr = Double.MAX_VALUE;
 
+            // Pass 1: Look for an available house in the villager's current village
             for (House house : registeredHouses) {
-                if (assignedVillageId != null && house.villageId != assignedVillageId) {
-                    continue;
-                }
-
                 if (!house.isFull()) {
+                    if (assignedVillageId != null && house.villageId != assignedVillageId) {
+                        continue;
+                    }
                     BlockPos housePos = !house.beds.isEmpty() ? house.beds.get(0) : house.homePos;
                     double distSqr = housePos.distSqr(villagerPos);
                     if (distSqr < bestDistSqr) {
                         bestDistSqr = distSqr;
                         bestHouse = house;
+                    }
+                }
+            }
+
+            // Pass 2: Fallback to ANY available house in the world if Pass 1 found nothing
+            if (bestHouse == null) {
+                for (House house : registeredHouses) {
+                    if (!house.isFull()) {
+                        BlockPos housePos = !house.beds.isEmpty() ? house.beds.get(0) : house.homePos;
+                        double distSqr = housePos.distSqr(villagerPos);
+                        if (distSqr < bestDistSqr) {
+                            bestDistSqr = distSqr;
+                            bestHouse = house;
+                        }
                     }
                 }
             }
