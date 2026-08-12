@@ -44,15 +44,14 @@ public class VillageEventHandler {
         HouseNumberData houseData = HouseNumberData.get(level);
         UUID villagerId = villager.getUUID();
 
-        // --- THOROUGH BED SCANNING (NO SKIPPED BLOCKS) ---
+        // --- SCAN NEARBY BED STRUCTURES ---
         if (houseData.getHouseForVillager(villagerId) == null || villager.tickCount % 20 == 0) {
             BlockPos villagerPos = villager.blockPosition();
             BlockPos.MutableBlockPos mutPos = new BlockPos.MutableBlockPos();
 
-            // Full 1-block increment sweep so no bed head is missed
-            for (int x = -18; x <= 18; x++) {
-                for (int y = -8; y <= 12; y++) {
-                    for (int z = -18; z <= 18; z++) {
+            for (int x = -16; x <= 16; x++) {
+                for (int y = -6; y <= 8; y++) {
+                    for (int z = -16; z <= 16; z++) {
                         mutPos.set(villagerPos.getX() + x, villagerPos.getY() + y, villagerPos.getZ() + z);
                         BlockState state = level.getBlockState(mutPos);
 
@@ -78,7 +77,7 @@ public class VillageEventHandler {
         // --- VILLAGE BOUNDARY CHECK ---
         if (villager.getNavigation().getPath() != null) {
             BlockPos targetPos = villager.getNavigation().getPath().getTarget();
-            House targetHouse = houseData.findHouseNear(targetPos, 4.0);
+            House targetHouse = houseData.findHouseNear(targetPos, 3.0);
 
             if (targetHouse != null) {
                 if (villagerVillageId != null && targetHouse.villageId != villagerVillageId) {
@@ -214,9 +213,9 @@ public class VillageEventHandler {
 
     private static BlockPos findDoorNear(ServerLevel level, BlockPos pos) {
         BlockPos.MutableBlockPos mutPos = new BlockPos.MutableBlockPos();
-        for (int x = -6; x <= 6; x++) {
+        for (int x = -4; x <= 4; x++) {
             for (int y = -3; y <= 3; y++) {
-                for (int z = -6; z <= 6; z++) {
+                for (int z = -4; z <= 4; z++) {
                     mutPos.set(pos.getX() + x, pos.getY() + y, pos.getZ() + z);
                     if (level.getBlockState(mutPos).is(BlockTags.DOORS)) {
                         return mutPos.immutable();
