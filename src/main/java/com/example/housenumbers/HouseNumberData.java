@@ -10,6 +10,7 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.util.datafix.DataFixTypes;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.decoration.ArmorStand;
+import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.level.saveddata.SavedData;
 import net.minecraft.world.phys.AABB;
 
@@ -53,20 +54,26 @@ public class HouseNumberData extends SavedData {
         );
     }
 
+    public List<House> getAllHouses() {
+        return Collections.unmodifiableList(registeredHouses);
+    }
+
     public House findExistingHouseAt(String villageId, BlockPos pos) {
         for (House house : registeredHouses) {
-            if (house.villageId.equals(villageId) && house.homePos.closerThan(pos, 6)) {
+            BlockPos target = house.bedPos != null ? house.bedPos : house.homePos;
+            if (house.villageId.equals(villageId) && target.closerThan(pos, 6)) {
                 return house;
             }
         }
         return null;
     }
 
-    public House registerNewHouse(ServerLevel level, String villageId, BlockPos homePos, BlockPos bedPos, int maxCapacity) {
+    public House registerAndAssignHouse(ServerLevel level, String villageId, UUID ownerId, BlockPos homePos, BlockPos bedPos, int maxCapacity) {
         int nextNumber = villageHouseCounters.getOrDefault(villageId, 0) + 1;
         villageHouseCounters.put(villageId, nextNumber);
 
         House newHouse = new House(villageId, nextNumber, homePos, bedPos, Math.max(1, maxCapacity));
+        newHouse.assignedVillagers.add(ownerId);
         registeredHouses.add(newHouse);
 
         spawnHouseTag(level, newHouse);
@@ -97,12 +104,13 @@ public class HouseNumberData extends SavedData {
     }
 
     private void spawnHouseTag(ServerLevel level, House house) {
-        BlockPos tagPos = house.homePos.above(4);
-        while (level.getBlockState(tagPos).isSolid() && tagPos.getY() < level.getMaxBuildHeight()) {
-            tagPos = tagPos.above();
-        }
+        BlockPos basePos = house.homePos;
+        // Find the top surface of the roof structure
+        BlockPos roofPos = level.getHeightmapPos(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, basePos);
+        int topY = Math.max(roofPos.getY(), basePos.getY() + 3);
+        BlockPos tagPos = new BlockPos(basePos.getX(), topY, basePos.getZ());
 
-        AABB searchBox = new AABB(tagPos).inflate(2.0);
+        AABB searchBox = new AABB(tagPos).inflate(3.0);
         List<ArmorStand> existingStands = level.getEntitiesOfClass(ArmorStand.class, searchBox);
 
         boolean alreadyExists = false;
@@ -115,7 +123,7 @@ public class HouseNumberData extends SavedData {
 
         if (!alreadyExists) {
             ArmorStand marker = new ArmorStand(EntityType.ARMOR_STAND, level);
-            marker.setPos(tagPos.getX() + 0.5, tagPos.getY() + 0.2, tagPos.getZ() + 0.5);
+            marker.setPos(tagPos.getX() + 0.5, tagPos.getY() + 0.8, tagPos.getZ() + 0.5);
             marker.setCustomName(Component.literal("House #" + house.houseNumber));
             marker.setCustomNameVisible(true);
             marker.setInvisible(true);
