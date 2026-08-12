@@ -45,27 +45,14 @@ public class VillageEventHandler {
         HouseNumberData houseData = HouseNumberData.get(level);
         UUID villagerId = villager.getUUID();
 
-        // --- PREVENT NON-OWNERS FROM PATHING INTO UNOWNED HOUSES ---
-        if (villager.getNavigation().getPath() != null) {
-            BlockPos targetPos = villager.getNavigation().getPath().getTarget();
-            House targetHouse = houseData.findExistingHouseAt(targetPos);
-            if (targetHouse != null) {
-                boolean isOwnerOrBaby = targetHouse.isOwner(villagerId) || isBabyOfOwner(villager, targetHouse);
-                if (!isOwnerOrBaby) {
-                    villager.getNavigation().stop();
-                    villager.getBrain().eraseMemory(MemoryModuleType.WALK_TARGET);
-                }
-            }
-        }
-
-        // --- SCAN HOUSES & INSTANT ASSIGNMENT ---
-        if (villager.tickCount % 40 == 0) {
+        // --- IMMEDIATE VILLAGE / HOUSE SCANNING ON LOAD ---
+        if (houseData.getHouseForVillager(villagerId) == null || villager.tickCount % 20 == 0) {
             BlockPos villagerPos = villager.blockPosition();
             BlockPos.MutableBlockPos mutPos = new BlockPos.MutableBlockPos();
 
-            for (int x = -12; x <= 12; x++) {
-                for (int y = -4; y <= 4; y++) {
-                    for (int z = -12; z <= 12; z++) {
+            for (int x = -24; x <= 24; x += 2) {
+                for (int y = -8; y <= 8; y += 2) {
+                    for (int z = -24; z <= 24; z += 2) {
                         mutPos.set(villagerPos.getX() + x, villagerPos.getY() + y, villagerPos.getZ() + z);
                         BlockState state = level.getBlockState(mutPos);
 
@@ -86,6 +73,19 @@ public class VillageEventHandler {
                 }
             }
             houseData.autoAssignLoadedVillagers(level);
+        }
+
+        // --- PREVENT NON-OWNERS FROM PATHING INTO UNOWNED HOUSES ---
+        if (villager.getNavigation().getPath() != null) {
+            BlockPos targetPos = villager.getNavigation().getPath().getTarget();
+            House targetHouse = houseData.findExistingHouseAt(targetPos);
+            if (targetHouse != null) {
+                boolean isOwnerOrBaby = targetHouse.isOwner(villagerId) || isBabyOfOwner(villager, targetHouse);
+                if (!isOwnerOrBaby) {
+                    villager.getNavigation().stop();
+                    villager.getBrain().eraseMemory(MemoryModuleType.WALK_TARGET);
+                }
+            }
         }
 
         // --- DOOR & NIGHT BOUNDARY LOGIC ---
