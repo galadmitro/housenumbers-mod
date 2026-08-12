@@ -20,7 +20,6 @@ import java.util.UUID;
 @EventBusSubscriber(modid = HouseNumbersMod.MODID)
 public class VillageEventHandler {
 
-    // Permanent baby -> parent tracking map
     private static final Map<UUID, UUID> BABY_PARENT_MAP = new HashMap<>();
 
     @SubscribeEvent
@@ -36,7 +35,6 @@ public class VillageEventHandler {
         if (villager.isBaby()) {
             UUID babyId = villager.getUUID();
 
-            // Bind permanently to a single parent if not already bound
             if (!BABY_PARENT_MAP.containsKey(babyId)) {
                 List<Villager> nearby = level.getEntitiesOfClass(
                     Villager.class,
@@ -51,7 +49,6 @@ public class VillageEventHandler {
                 }
             }
 
-            // Follow bound parent naturally
             if (BABY_PARENT_MAP.containsKey(babyId)) {
                 UUID parentId = BABY_PARENT_MAP.get(babyId);
                 Villager parent = (Villager) level.getEntity(parentId);
@@ -64,78 +61,102 @@ public class VillageEventHandler {
                         villager.setCustomNameVisible(true);
                     }
 
-                    // Only adjust navigation if baby gets too far, otherwise let vanilla baby AI play
                     if (villager.tickCount % 40 == 0 && villager.distanceToSqr(parent) > 25.0) {
-                        villager.getNavigation().moveTo(parent, 1.0D);
+                        villager.getNavigation().moveTo(parent, 0.6D); // Relaxed walking speed
                     }
                 }
             }
             return;
         }
 
-        // --- 2. PERMANENT HOUSE ASSIGNMENT & INDIVIDUAL BED SEARCH ---
+        // --- 2. HOUSE DETECTION & ASSIGNMENT ---
         HouseNumberData.House assignedHouse = houseData.getHouseForVillager(villager.getUUID());
 
         if (assignedHouse == null) {
             BlockPos villagerPos = villager.blockPosition();
-
-            // Strict region ID based on chunk coordinates
             String villageId = "village_" + (villagerPos.getX() >> 7) + "_" + (villagerPos.getZ() >> 7);
 
-            // Find the single closest bed block within 8 blocks
             BlockPos foundBedPos = null;
+            BlockPos foundDoorPos = null;
             BlockPos.MutableBlockPos mutPos = new BlockPos.MutableBlockPos();
 
+            // Scan nearby area for beds or doors
             for (int x = -8; x <= 8; x++) {
                 for (int y = -3; y <= 3; y++) {
                     for (int z = -8; z <= 8; z++) {
                         mutPos.set(villagerPos.getX() + x, villagerPos.getY() + y, villagerPos.getZ() + z);
-                        if (level.getBlockState(mutPos).is(BlockTags.BEDS)) {
+                        if (foundBedPos == null && level.getBlockState(mutPos).is(BlockTags.BEDS)) {
                             foundBedPos = mutPos.immutable();
-                            break;
+                        }
+                        if (foundDoorPos == null && level.getBlockState(mutPos).is(BlockTags.DOORS)) {
+                            foundDoorPos = mutPos.immutable();
                         }
                     }
-                    if (foundBedPos != null) break;
                 }
-                if (foundBedPos != null) break;
             }
 
+            // Option A: House with Bed
             if (foundBedPos != null) {
-                // Register house specifically centered on THIS bed, capacity defaults to 2 beds max per house
-                HouseNumberData.House house = houseData.findOrRegisterHouse(level, villageId, foundBedPos, 2);
-                if (houseData.assignVillagerToHouse(villager.getUUID(), house)) {
-                    assignedHouse = house;
+                HouseNumberData.House existing = houseData.findExistingHouseAt(villageId, foundBedPos);
+                if (existing != null && !existing.isFull()) {
+                    houseData.assignVillagerToHouse(villager.getUUID(), existing);
+                    assignedHouse = existing;
+                } else if (existing == null) {
+                    House newHouse = houseData.registerNewHouse(level, villageId, foundBedPos, foundBedPos, 1);
+                    houseData.assignVillagerToHouse(villager.getUUID(), newHouse);
+                    assignedHouse = newHouse;
+                }
+            }
+            // Option B: House without Bed (Door detected)
+            else if (foundDoorPos != null) {
+                HouseNumberData.House existing = houseData.findExistingHouseAt(villageId, foundDoorPos);
+                if (existing != null && !existing.isFull()) {
+                    houseData.assignVillagerToHouse(villager.getUUID(), existing);
+                    assignedHouse = existing;
+                } else if (existing == null) {
+                    House newHouse = houseData.registerNewHouse(level, villageId, foundDoorPos, null, 1);
+                    houseData.assignVillagerToHouse(villager.getUUID(), newHouse);
+                    assignedHouse = newHouse;
                 }
             }
         }
 
-        // --- 3. NIGHTTIME SLEEPING & HOUSE PERSISTENCE ---
+        // --- 3. NIGHTTIME MOVEMENT & SLEEPING / STAYING IN HOUSE ---
         if (assignedHouse != null) {
             villager.setCustomName(Component.literal("House #" + assignedHouse.houseNumber));
             villager.setCustomNameVisible(true);
 
-            // Override home memory so villager never unbinds from house
+            // Bind home memory exclusively to assigned house position
+            BlockPos targetPos = (assignedHouse.bedPos != null) ? assignedHouse.bedPos : assignedHouse.homePos;
             villager.getBrain().setMemory(
                 MemoryModuleType.HOME,
-                GlobalPos.of(level.dimension(), assignedHouse.bedPos)
+                GlobalPos.of(level.dimension(), targetPos)
             );
 
             if (level.isNight()) {
-                double distToBedSqr = villager.blockPosition().distSqr(assignedHouse.bedPos);
+                double distSqr = villager.blockPosition().distSqr(targetPos);
 
-                // If villager is close to the bed block, sleep in the bed!
-                if (distToBedSqr <= 3.0 && !villager.isSleeping()) {
-                    villager.startSleeping(assignedHouse.bedPos);
-                } else if (!villager.isSleeping() && villager.tickCount % 40 == 0) {
-                    // Navigate directly to the bed inside the house
-                    villager.getBrain().setMemory(MemoryModuleType.WALK_TARGET, new WalkTarget(assignedHouse.bedPos, 1.0F, 1));
-                    villager.getNavigation().moveTo(
-                        assignedHouse.bedPos.getX(),
-                        assignedHouse.bedPos.getY(),
-                        assignedHouse.bedPos.getZ(),
-                        1.0D
-                    );
+                // House WITH bed -> sleep in bed when close
+                if (assignedHouse.bedPos != null && level.getBlockState(assignedHouse.bedPos).is(BlockTags.BEDS)) {
+                    if (distSqr <= 3.0 && !villager.isSleeping()) {
+                        villager.startSleeping(assignedHouse.bedPos);
+                    } else if (!villager.isSleeping() && villager.tickCount % 40 == 0) {
+                        villager.getBrain().setMemory(MemoryModuleType.WALK_TARGET, new WalkTarget(targetPos, 0.6F, 1));
+                        villager.getNavigation().moveTo(targetPos.getX(), targetPos.getY(), targetPos.getZ(), 0.6D);
+                    }
+                } 
+                // House WITHOUT bed -> stay inside house, don't sleep
+                else {
+                    if (distSqr > 4.0 && villager.tickCount % 40 == 0) {
+                        villager.getBrain().setMemory(MemoryModuleType.WALK_TARGET, new WalkTarget(targetPos, 0.6F, 1));
+                        villager.getNavigation().moveTo(targetPos.getX(), targetPos.getY(), targetPos.getZ(), 0.6D);
+                    }
                 }
+            }
+        } else {
+            // Homeless villagers are prevented from taking homes/beds belonging to others
+            if (villager.getBrain().hasMemoryValue(MemoryModuleType.HOME)) {
+                villager.getBrain().eraseMemory(MemoryModuleType.HOME);
             }
         }
     }
