@@ -29,29 +29,50 @@ public class HouseNumberData extends SavedData {
     public static class House {
         public final int villageId;
         public final int houseNumber;
-        public final BlockPos homePos;
-        public final BlockPos bedPos;
-        public final BlockPos doorPos;
+        public BlockPos homePos;
+        public BlockPos doorPos;
         public Vec3 roofCenterPos;
-        public int maxCapacity;
+        public final List<BlockPos> beds = new ArrayList<>();
         public final Set<UUID> assignedVillagers = new HashSet<>();
+        public final Map<UUID, BlockPos> villagerBedMap = new HashMap<>();
 
-        public House(int villageId, int houseNumber, BlockPos homePos, BlockPos bedPos, BlockPos doorPos, Vec3 roofCenterPos, int maxCapacity) {
+        public House(int villageId, int houseNumber, BlockPos homePos, BlockPos doorPos, Vec3 roofCenterPos) {
             this.villageId = villageId;
             this.houseNumber = houseNumber;
             this.homePos = homePos;
-            this.bedPos = bedPos;
             this.doorPos = doorPos;
             this.roofCenterPos = roofCenterPos;
-            this.maxCapacity = Math.max(1, maxCapacity);
+        }
+
+        public void addBed(BlockPos bedPos) {
+            if (!beds.contains(bedPos)) {
+                beds.add(bedPos);
+            }
+        }
+
+        public int getMaxCapacity() {
+            return Math.max(1, beds.size());
         }
 
         public boolean isFull() {
-            return assignedVillagers.size() >= maxCapacity;
+            return assignedVillagers.size() >= getMaxCapacity();
         }
 
         public boolean isOwner(UUID villagerId) {
             return assignedVillagers.contains(villagerId);
+        }
+
+        public BlockPos getBedForVillager(UUID villagerId) {
+            if (villagerBedMap.containsKey(villagerId)) {
+                return villagerBedMap.get(villagerId);
+            }
+            for (BlockPos bed : beds) {
+                if (!villagerBedMap.containsValue(bed)) {
+                    villagerBedMap.put(villagerId, bed);
+                    return bed;
+                }
+            }
+            return beds.isEmpty() ? homePos : beds.get(0);
         }
     }
 
@@ -66,7 +87,7 @@ public class HouseNumberData extends SavedData {
 
         public boolean isNear(BlockPos pos, double maxDistance) {
             for (House h : houses) {
-                BlockPos target = h.bedPos != null ? h.bedPos : h.homePos;
+                BlockPos target = !h.beds.isEmpty() ? h.beds.get(0) : h.homePos;
                 if (target.closerThan(pos, maxDistance)) {
                     return true;
                 }
@@ -95,11 +116,16 @@ public class HouseNumberData extends SavedData {
         return Collections.unmodifiableList(registeredHouses);
     }
 
-    public House findExistingHouseAt(BlockPos pos) {
+    public House findHouseNear(BlockPos pos, double maxDist) {
+        double maxDistSqr = maxDist * maxDist;
         for (House house : registeredHouses) {
-            BlockPos target = house.bedPos != null ? house.bedPos : house.homePos;
-            if (target.closerThan(pos, 8.0)) {
+            if (house.homePos.distSqr(pos) <= maxDistSqr) {
                 return house;
+            }
+            for (BlockPos b : house.beds) {
+                if (b.distSqr(pos) <= maxDistSqr) {
+                    return house;
+                }
             }
         }
         return null;
@@ -128,33 +154,33 @@ public class HouseNumberData extends SavedData {
         setDirty();
     }
 
-    public House registerHouse(ServerLevel level, BlockPos homePos, BlockPos bedPos, BlockPos doorPos, int maxCapacity) {
-        House existing = findExistingHouseAt(homePos);
+    public House registerOrUpdateHouse(ServerLevel level, BlockPos bedPos, BlockPos doorPos) {
+        House existing = findHouseNear(bedPos, 8.0);
         if (existing != null) {
-            if (maxCapacity > existing.maxCapacity) {
-                existing.maxCapacity = maxCapacity;
-                setDirty();
-            }
+            existing.addBed(bedPos);
+            if (doorPos != null) existing.doorPos = doorPos;
+            existing.roofCenterPos = calculateRoofCenter(level, existing.homePos);
+            spawnOrUpdateHouseTag(level, existing);
+            setDirty();
             return existing;
         }
 
-        BlockPos targetPos = bedPos != null ? bedPos : homePos;
-        VillageCluster cluster = findClusterNear(targetPos);
-
+        VillageCluster cluster = findClusterNear(bedPos);
         if (cluster == null) {
             cluster = new VillageCluster(nextVillageId++);
             clusters.add(cluster);
         }
 
-        Vec3 centerRoof = calculateRoofCenter(level, targetPos);
         int houseNumber = cluster.nextHouseNumber++;
+        Vec3 centerRoof = calculateRoofCenter(level, bedPos);
 
-        House newHouse = new House(cluster.villageId, houseNumber, homePos, bedPos, doorPos, centerRoof, maxCapacity);
+        House newHouse = new House(cluster.villageId, houseNumber, bedPos, doorPos != null ? doorPos : bedPos, centerRoof);
+        newHouse.addBed(bedPos);
+
         cluster.houses.add(newHouse);
         registeredHouses.add(newHouse);
 
-        spawnHouseTag(level, newHouse);
-
+        spawnOrUpdateHouseTag(level, newHouse);
         setDirty();
         return newHouse;
     }
@@ -162,11 +188,13 @@ public class HouseNumberData extends SavedData {
     public boolean assignVillagerToHouse(UUID villagerId, House house) {
         if (house.assignedVillagers.contains(villagerId)) {
             villagerVillageMap.put(villagerId, house.villageId);
+            house.getBedForVillager(villagerId);
             return true;
         }
         if (!house.isFull()) {
             house.assignedVillagers.add(villagerId);
             villagerVillageMap.put(villagerId, house.villageId);
+            house.getBedForVillager(villagerId);
             setDirty();
             return true;
         }
@@ -191,6 +219,7 @@ public class HouseNumberData extends SavedData {
                 Entity entity = level.getEntity(uuid);
                 if (entity != null && (!entity.isAlive() || !(entity instanceof Villager))) {
                     iterator.remove();
+                    house.villagerBedMap.remove(uuid);
                     villagerVillageMap.remove(uuid);
                     changed = true;
                 }
@@ -209,7 +238,7 @@ public class HouseNumberData extends SavedData {
         for (Villager villager : villagers) {
             BlockPos villagerPos = villager.blockPosition();
             UUID vId = villager.getUUID();
-            
+
             Integer assignedVillageId = villagerVillageMap.get(vId);
             if (assignedVillageId == null) {
                 VillageCluster nearCluster = findClusterNear(villagerPos);
@@ -223,13 +252,12 @@ public class HouseNumberData extends SavedData {
             double bestDistSqr = Double.MAX_VALUE;
 
             for (House house : registeredHouses) {
-                // STRICT VILLAGE ISOLATION: Only assign houses matching villager's village
                 if (assignedVillageId != null && house.villageId != assignedVillageId) {
                     continue;
                 }
 
                 if (!house.isFull()) {
-                    BlockPos housePos = house.bedPos != null ? house.bedPos : house.homePos;
+                    BlockPos housePos = !house.beds.isEmpty() ? house.beds.get(0) : house.homePos;
                     double distSqr = housePos.distSqr(villagerPos);
                     if (distSqr < bestDistSqr) {
                         bestDistSqr = distSqr;
@@ -317,32 +345,33 @@ public class HouseNumberData extends SavedData {
                state.is(BlockTags.WOOL);
     }
 
-    private void spawnHouseTag(ServerLevel level, House house) {
+    private void spawnOrUpdateHouseTag(ServerLevel level, House house) {
         Vec3 tagPos = house.roofCenterPos;
-        AABB searchBox = new AABB(new BlockPos((int) tagPos.x, (int) tagPos.y, (int) tagPos.z)).inflate(8.0);
+        AABB searchBox = new AABB(new BlockPos((int) tagPos.x, (int) tagPos.y, (int) tagPos.z)).inflate(12.0);
         List<ArmorStand> existingStands = level.getEntitiesOfClass(ArmorStand.class, searchBox);
 
-        ArmorStand existing = null;
+        String tagText = "House #" + house.houseNumber;
+        ArmorStand targetStand = null;
+
         for (ArmorStand stand : existingStands) {
-            if (stand.getCustomName() != null && stand.getCustomName().getString().equals("House #" + house.houseNumber)) {
-                existing = stand;
+            if (stand.getCustomName() != null && stand.getCustomName().getString().equals(tagText)) {
+                targetStand = stand;
                 break;
             }
         }
 
-        if (existing != null) {
-            existing.setPos(tagPos.x, tagPos.y, tagPos.z);
-            existing.setInvisible(true);
-            existing.setNoGravity(true);
+        if (targetStand != null) {
+            targetStand.setPos(tagPos.x, tagPos.y, tagPos.z);
+            targetStand.setInvisible(true);
+            targetStand.setNoGravity(true);
+            targetStand.setCustomNameVisible(true);
         } else {
             ArmorStand marker = new ArmorStand(EntityType.ARMOR_STAND, level);
             marker.setPos(tagPos.x, tagPos.y, tagPos.z);
-            marker.setCustomName(Component.literal("House #" + house.houseNumber));
+            marker.setCustomName(Component.literal(tagText));
             marker.setCustomNameVisible(true);
-
             marker.setInvisible(true);
             marker.setNoGravity(true);
-
             level.addFreshEntity(marker);
         }
     }
@@ -359,17 +388,28 @@ public class HouseNumberData extends SavedData {
             int vId = hTag.contains("VillageId") ? hTag.getInt("VillageId") : 1;
             int num = hTag.getInt("Number");
             BlockPos homePos = BlockPos.of(hTag.getLong("HomePos"));
-            BlockPos bedPos = hTag.contains("BedPos") ? BlockPos.of(hTag.getLong("BedPos")) : null;
             BlockPos doorPos = hTag.contains("DoorPos") ? BlockPos.of(hTag.getLong("DoorPos")) : homePos;
             Vec3 roofCenter = new Vec3(hTag.getDouble("RoofX"), hTag.getDouble("RoofY"), hTag.getDouble("RoofZ"));
-            int cap = hTag.getInt("Capacity");
 
-            House house = new House(vId, num, homePos, bedPos, doorPos, roofCenter, cap);
+            House house = new House(vId, num, homePos, doorPos, roofCenter);
+
+            if (hTag.contains("Beds", Tag.TAG_LIST)) {
+                ListTag bedList = hTag.getList("Beds", Tag.TAG_COMPOUND);
+                for (int k = 0; k < bedList.size(); k++) {
+                    house.addBed(BlockPos.of(bedList.getCompound(k).getLong("Pos")));
+                }
+            } else if (hTag.contains("BedPos")) {
+                house.addBed(BlockPos.of(hTag.getLong("BedPos")));
+            }
+
             int villagerCount = hTag.getInt("VillagerCount");
             for (int j = 0; j < villagerCount; j++) {
                 UUID vUuid = hTag.getUUID("Villager_" + j);
                 house.assignedVillagers.add(vUuid);
                 data.villagerVillageMap.put(vUuid, vId);
+                if (hTag.contains("VillagerBed_" + j)) {
+                    house.villagerBedMap.put(vUuid, BlockPos.of(hTag.getLong("VillagerBed_" + j)));
+                }
             }
             data.registeredHouses.add(house);
 
@@ -394,21 +434,30 @@ public class HouseNumberData extends SavedData {
             hTag.putInt("VillageId", house.villageId);
             hTag.putInt("Number", house.houseNumber);
             hTag.putLong("HomePos", house.homePos.asLong());
-            if (house.bedPos != null) {
-                hTag.putLong("BedPos", house.bedPos.asLong());
-            }
             if (house.doorPos != null) {
                 hTag.putLong("DoorPos", house.doorPos.asLong());
             }
             hTag.putDouble("RoofX", house.roofCenterPos.x);
             hTag.putDouble("RoofY", house.roofCenterPos.y);
             hTag.putDouble("RoofZ", house.roofCenterPos.z);
-            hTag.putInt("Capacity", house.maxCapacity);
+
+            ListTag bedList = new ListTag();
+            for (BlockPos bPos : house.beds) {
+                CompoundTag bTag = new CompoundTag();
+                bTag.putLong("Pos", bPos.asLong());
+                bedList.add(bTag);
+            }
+            hTag.put("Beds", bedList);
 
             hTag.putInt("VillagerCount", house.assignedVillagers.size());
             int idx = 0;
             for (UUID uuid : house.assignedVillagers) {
-                hTag.putUUID("Villager_" + idx++, uuid);
+                hTag.putUUID("Villager_" + idx, uuid);
+                BlockPos bed = house.villagerBedMap.get(uuid);
+                if (bed != null) {
+                    hTag.putLong("VillagerBed_" + idx, bed.asLong());
+                }
+                idx++;
             }
             houseList.add(hTag);
         }
