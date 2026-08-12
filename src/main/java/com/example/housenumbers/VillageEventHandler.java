@@ -1,5 +1,6 @@
 package com.example.housenumbers;
 
+import com.example.housenumbers.HouseNumberData.House;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.GlobalPos;
 import net.minecraft.network.chat.Component;
@@ -54,7 +55,7 @@ public class VillageEventHandler {
                 Villager parent = (Villager) level.getEntity(parentId);
 
                 if (parent != null && parent.isAlive()) {
-                    HouseNumberData.House parentHouse = houseData.getHouseForVillager(parent.getUUID());
+                    House parentHouse = houseData.getHouseForVillager(parent.getUUID());
 
                     if (parentHouse != null) {
                         villager.setCustomName(Component.literal("Baby (House #" + parentHouse.houseNumber + ")"));
@@ -62,7 +63,7 @@ public class VillageEventHandler {
                     }
 
                     if (villager.tickCount % 40 == 0 && villager.distanceToSqr(parent) > 25.0) {
-                        villager.getNavigation().moveTo(parent, 0.6D); // Relaxed walking speed
+                        villager.getNavigation().moveTo(parent, 0.6D);
                     }
                 }
             }
@@ -70,7 +71,7 @@ public class VillageEventHandler {
         }
 
         // --- 2. HOUSE DETECTION & ASSIGNMENT ---
-        HouseNumberData.House assignedHouse = houseData.getHouseForVillager(villager.getUUID());
+        House assignedHouse = houseData.getHouseForVillager(villager.getUUID());
 
         if (assignedHouse == null) {
             BlockPos villagerPos = villager.blockPosition();
@@ -97,7 +98,7 @@ public class VillageEventHandler {
 
             // Option A: House with Bed
             if (foundBedPos != null) {
-                HouseNumberData.House existing = houseData.findExistingHouseAt(villageId, foundBedPos);
+                House existing = houseData.findExistingHouseAt(villageId, foundBedPos);
                 if (existing != null && !existing.isFull()) {
                     houseData.assignVillagerToHouse(villager.getUUID(), existing);
                     assignedHouse = existing;
@@ -109,7 +110,7 @@ public class VillageEventHandler {
             }
             // Option B: House without Bed (Door detected)
             else if (foundDoorPos != null) {
-                HouseNumberData.House existing = houseData.findExistingHouseAt(villageId, foundDoorPos);
+                House existing = houseData.findExistingHouseAt(villageId, foundDoorPos);
                 if (existing != null && !existing.isFull()) {
                     houseData.assignVillagerToHouse(villager.getUUID(), existing);
                     assignedHouse = existing;
