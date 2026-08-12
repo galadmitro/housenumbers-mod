@@ -36,6 +36,14 @@ public class VillageEventHandler {
         HouseNumberData houseData = HouseNumberData.get(level);
         UUID villagerId = villager.getUUID();
 
+        // --- PREVENT STARING & INTERACTION LOCKS ---
+        if (villager.getBrain().hasMemoryValue(MemoryModuleType.INTERACTION_TARGET)) {
+            villager.getBrain().eraseMemory(MemoryModuleType.INTERACTION_TARGET);
+        }
+        if (villager.getBrain().hasMemoryValue(MemoryModuleType.LOOK_TARGET)) {
+            villager.getBrain().eraseMemory(MemoryModuleType.LOOK_TARGET);
+        }
+
         // --- 1. SCAN HOUSES & INSTANT ASSIGNMENT ON LOAD ---
         if (villager.tickCount % 40 == 0) {
             BlockPos villagerPos = villager.blockPosition();
@@ -57,11 +65,10 @@ public class VillageEventHandler {
                     }
                 }
             }
-            // Instantly assign any homeless villagers upon load/scan
             houseData.autoAssignLoadedVillagers(level);
         }
 
-        // --- 2. DOOR LOGIC & IGNORING NON-OWNED HOUSES ---
+        // --- 2. DOOR LOGIC & HOUSE BOUNDARIES ---
         for (House house : houseData.getAllHouses()) {
             if (house.doorPos != null) {
                 BlockState doorState = level.getBlockState(house.doorPos);
@@ -81,27 +88,35 @@ public class VillageEventHandler {
                         boolean isOwnerOrBaby = house.isOwner(villagerId) || isBabyOfOwner(villager, house);
 
                         if (isInside) {
-                            // CAN open from inside to exit (owners and trapped guests)
-                            openDoorIfClosed(level, lowerDoorPos);
+                            if (level.isNight()) {
+                                // AT NIGHT: Keep door closed so residents inside stay inside
+                                closeDoorIfOpen(level, lowerDoorPos);
 
-                            if (!isOwnerOrBaby && level.isNight()) {
-                                BlockPos outsidePos = lowerDoorPos.offset(
-                                    lowerDoorPos.getX() - houseCenter.getX(),
-                                    0,
-                                    lowerDoorPos.getZ() - houseCenter.getZ()
-                                );
-                                villager.getNavigation().moveTo(outsidePos.getX(), outsidePos.getY(), outsidePos.getZ(), 0.5D);
+                                if (!isOwnerOrBaby) {
+                                    // Evict non-owners inside at night
+                                    BlockPos outsidePos = lowerDoorPos.offset(
+                                        lowerDoorPos.getX() - houseCenter.getX(),
+                                        0,
+                                        lowerDoorPos.getZ() - houseCenter.getZ()
+                                    );
+                                    villager.getNavigation().moveTo(outsidePos.getX(), outsidePos.getY(), outsidePos.getZ(), 0.5D);
+                                }
+                            } else {
+                                // DAYTIME: Owners and babies can open doors to head out
+                                if (isOwnerOrBaby) {
+                                    openDoorIfClosed(level, lowerDoorPos);
+                                }
                             }
                         } else {
                             // OUTSIDE LOGIC
                             if (isOwnerOrBaby) {
+                                // Owners and babies outside can open doors to enter
                                 openDoorIfClosed(level, lowerDoorPos);
                             } else {
-                                // Non-owner outside: CANNOT open door & will NOT enter door frame
+                                // Non-owners outside: CANNOT open door & stop targeting
                                 if (villager.getNavigation().getPath() != null) {
                                     BlockPos targetPos = villager.getNavigation().getPath().getTarget();
                                     if (targetPos.distSqr(houseCenter) < 16.0) {
-                                        // Calmly clear walk target so they ignore and don't enter
                                         villager.getNavigation().stop();
                                         villager.getBrain().eraseMemory(MemoryModuleType.WALK_TARGET);
                                     }
@@ -129,27 +144,59 @@ public class VillageEventHandler {
                 }
             }
 
+            House parentHouse = null;
+            Villager parent = null;
+
             if (BABY_PARENT_MAP.containsKey(villagerId)) {
                 UUID parentId = BABY_PARENT_MAP.get(villagerId);
-                Villager parent = (Villager) level.getEntity(parentId);
-
+                parent = (Villager) level.getEntity(parentId);
                 if (parent != null && parent.isAlive()) {
-                    House parentHouse = houseData.getHouseForVillager(parent.getUUID());
-
-                    if (parentHouse != null) {
-                        villager.setCustomName(Component.literal("Baby (House #" + parentHouse.houseNumber + ")"));
-                        villager.setCustomNameVisible(true);
-                    }
-
-                    if (villager.tickCount % 40 == 0 && villager.distanceToSqr(parent) > 25.0) {
-                        villager.getNavigation().moveTo(parent, 0.5D);
-                    }
+                    parentHouse = houseData.getHouseForVillager(parent.getUUID());
                 }
             }
+
+            if (parentHouse != null) {
+                villager.setCustomName(Component.literal("Baby (House #" + parentHouse.houseNumber + ")"));
+                villager.setCustomNameVisible(true);
+
+                BlockPos targetPos = parentHouse.bedPos != null ? parentHouse.bedPos : parentHouse.homePos;
+
+                if (level.isNight()) {
+                    // AT NIGHT: Baby goes into parent's house and stays inside
+                    double distSqrToHouse = villager.blockPosition().distSqr(targetPos);
+                    if (distSqrToHouse > 3.0) {
+                        if (villager.tickCount % 20 == 0) {
+                            villager.getBrain().setMemory(MemoryModuleType.WALK_TARGET, new WalkTarget(targetPos, 0.5F, 1));
+                            villager.getNavigation().moveTo(targetPos.getX(), targetPos.getY(), targetPos.getZ(), 0.5D);
+                        }
+                    } else {
+                        // Already inside house, stop walking around
+                        villager.getNavigation().stop();
+                        villager.getBrain().eraseMemory(MemoryModuleType.WALK_TARGET);
+                    }
+                } else {
+                    // DAYTIME: Follow parent with a comfortable buffer distance so they don't face-lock
+                    if (parent != null) {
+                        double distSqrToParent = villager.distanceToSqr(parent);
+                        if (distSqrToParent > 16.0 && villager.tickCount % 40 == 0) {
+                            villager.getNavigation().moveTo(parent, 0.5D);
+                        } else if (distSqrToParent <= 9.0) {
+                            // Close enough, stop pushing directly into parent's face
+                            villager.getNavigation().stop();
+                            villager.getBrain().eraseMemory(MemoryModuleType.WALK_TARGET);
+                        }
+                    }
+                }
+            } else if (level.isNight()) {
+                // Baby without parent house stays put at night
+                villager.getNavigation().stop();
+                villager.getBrain().eraseMemory(MemoryModuleType.WALK_TARGET);
+            }
+
             return;
         }
 
-        // --- 4. HOUSE NAMING & NIGHT SLEEPING ---
+        // --- 4. ADULT VILLAGER NAMING & NIGHT SLEEPING ---
         House assignedHouse = houseData.getHouseForVillager(villagerId);
 
         if (assignedHouse != null) {
@@ -171,6 +218,17 @@ public class VillageEventHandler {
                     } else if (!villager.isSleeping() && villager.tickCount % 40 == 0) {
                         villager.getBrain().setMemory(MemoryModuleType.WALK_TARGET, new WalkTarget(targetPos, 0.5F, 1));
                         villager.getNavigation().moveTo(targetPos.getX(), targetPos.getY(), targetPos.getZ(), 0.5D);
+                    }
+                } else {
+                    // House without bed: Move inside and stay inside at night
+                    if (distSqr > 3.0) {
+                        if (villager.tickCount % 40 == 0) {
+                            villager.getBrain().setMemory(MemoryModuleType.WALK_TARGET, new WalkTarget(targetPos, 0.5F, 1));
+                            villager.getNavigation().moveTo(targetPos.getX(), targetPos.getY(), targetPos.getZ(), 0.5D);
+                        }
+                    } else {
+                        villager.getNavigation().stop();
+                        villager.getBrain().eraseMemory(MemoryModuleType.WALK_TARGET);
                     }
                 }
             }
@@ -204,6 +262,15 @@ public class VillageEventHandler {
         if (state.getBlock() instanceof DoorBlock) {
             if (!state.getValue(DoorBlock.OPEN)) {
                 level.setBlock(doorPos, state.setValue(DoorBlock.OPEN, true), 3);
+            }
+        }
+    }
+
+    private static void closeDoorIfOpen(ServerLevel level, BlockPos doorPos) {
+        BlockState state = level.getBlockState(doorPos);
+        if (state.getBlock() instanceof DoorBlock) {
+            if (state.getValue(DoorBlock.OPEN)) {
+                level.setBlock(doorPos, state.setValue(DoorBlock.OPEN, false), 3);
             }
         }
     }
