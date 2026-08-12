@@ -1,6 +1,7 @@
 package com.example.housenumbers;
 
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.HolderLookup;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.Tag;
@@ -14,7 +15,7 @@ public class HouseNumberData extends SavedData {
 
     public static class House {
         public final String villageId;
-        public final int houseNumber; // Starts at #1 for EACH village
+        public final int houseNumber;
         public final BlockPos centerPos;
         public final int maxCapacity;
         public final Set<UUID> assignedVillagers = new HashSet<>();
@@ -42,14 +43,12 @@ public class HouseNumberData extends SavedData {
     }
 
     public House findOrRegisterHouse(String villageId, BlockPos structurePos, int bedCount) {
-        // Return existing registered house if inside same structure area
         for (House house : registeredHouses) {
             if (house.villageId.equals(villageId) && house.centerPos.closerThan(structurePos, 16)) {
                 return house;
             }
         }
 
-        // Fresh house number local to this specific village
         int nextNumber = villageHouseCounters.getOrDefault(villageId, 0) + 1;
         villageHouseCounters.put(villageId, nextNumber);
 
@@ -68,7 +67,7 @@ public class HouseNumberData extends SavedData {
             setDirty();
             return true;
         }
-        return false; // House is full
+        return false;
     }
 
     public House getHouseForVillager(UUID villagerId) {
@@ -80,7 +79,7 @@ public class HouseNumberData extends SavedData {
         return null;
     }
 
-    public static HouseNumberData load(CompoundTag tag) {
+    public static HouseNumberData load(CompoundTag tag, HolderLookup.Provider registries) {
         HouseNumberData data = new HouseNumberData();
 
         ListTag houseList = tag.getList("Houses", Tag.TAG_COMPOUND);
@@ -103,7 +102,7 @@ public class HouseNumberData extends SavedData {
     }
 
     @Override
-    public CompoundTag save(CompoundTag tag) {
+    public CompoundTag save(CompoundTag tag, HolderLookup.Provider registries) {
         ListTag houseList = new ListTag();
         for (House house : registeredHouses) {
             CompoundTag hTag = new CompoundTag();
