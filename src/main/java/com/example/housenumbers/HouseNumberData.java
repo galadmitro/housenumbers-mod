@@ -1,164 +1,125 @@
 package com.example.housenumbers;
 
 import net.minecraft.core.BlockPos;
-import net.minecraft.core.HolderLookup;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
+import net.minecraft.nbt.Tag;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.saveddata.SavedData;
-import net.minecraft.world.level.storage.DimensionDataStorage;
 
 import java.util.*;
 
 public class HouseNumberData extends SavedData {
-    private static final String ID = "housenumbers_data";
+    private static final String DATA_NAME = "house_number_data";
 
-    private final Map<BlockPos, Integer> bedToHouseNumber = new HashMap<>();
-    private final Map<BlockPos, BlockPos> bedToVillageCenter = new HashMap<>();
-    private final Map<BlockPos, Integer> villageNextNumber = new HashMap<>();
-    private final List<BlockPos> villageCenters = new ArrayList<>();
-    private final Set<BlockPos> taggedStructures = new HashSet<>();
+    public static class House {
+        public final String villageId;
+        public final int houseNumber; // Starts at #1 for EACH village
+        public final BlockPos centerPos;
+        public final int maxCapacity;
+        public final Set<UUID> assignedVillagers = new HashSet<>();
 
-    public static HouseNumberData get(DimensionDataStorage storage) {
-        return storage.computeIfAbsent(
-                new SavedData.Factory<>(HouseNumberData::new, HouseNumberData::load),
-                ID
+        public House(String villageId, int houseNumber, BlockPos centerPos, int maxCapacity) {
+            this.villageId = villageId;
+            this.houseNumber = houseNumber;
+            this.centerPos = centerPos;
+            this.maxCapacity = maxCapacity;
+        }
+    }
+
+    private final Map<String, Integer> villageHouseCounters = new HashMap<>();
+    private final List<House> registeredHouses = new ArrayList<>();
+
+    public static HouseNumberData get(ServerLevel level) {
+        return level.getDataStorage().computeIfAbsent(
+            new SavedData.Factory<>(
+                HouseNumberData::new,
+                HouseNumberData::load,
+                null
+            ),
+            DATA_NAME
         );
     }
 
-    public boolean isBedKnown(BlockPos pos) {
-        return bedToHouseNumber.containsKey(pos.immutable());
-    }
-
-    public Integer getHouseNumber(BlockPos pos) {
-        return bedToHouseNumber.get(pos.immutable());
-    }
-
-    public BlockPos getVillageCenter(BlockPos pos) {
-        return bedToVillageCenter.get(pos.immutable());
-    }
-
-    public BlockPos findOrCreateVillageCenter(BlockPos pos, double radius) {
-        BlockPos key = pos.immutable();
-        for (BlockPos center : villageCenters) {
-            if (center.closerThan(key, radius)) {
-                return center;
+    public House findOrRegisterHouse(String villageId, BlockPos structurePos, int bedCount) {
+        // Return existing registered house if inside same structure area
+        for (House house : registeredHouses) {
+            if (house.villageId.equals(villageId) && house.centerPos.closerThan(structurePos, 16)) {
+                return house;
             }
         }
-        villageCenters.add(key);
+
+        // Fresh house number local to this specific village
+        int nextNumber = villageHouseCounters.getOrDefault(villageId, 0) + 1;
+        villageHouseCounters.put(villageId, nextNumber);
+
+        House newHouse = new House(villageId, nextNumber, structurePos, Math.max(1, bedCount));
+        registeredHouses.add(newHouse);
         setDirty();
-        return key;
+        return newHouse;
     }
 
-    public boolean isStructureTagged(BlockPos structPos) {
-        return taggedStructures.contains(structPos.immutable());
+    public boolean assignVillagerToHouse(UUID villagerId, House house) {
+        if (house.assignedVillagers.contains(villagerId)) {
+            return true;
+        }
+        if (house.assignedVillagers.size() < house.maxCapacity) {
+            house.assignedVillagers.add(villagerId);
+            setDirty();
+            return true;
+        }
+        return false; // House is full
     }
 
-    public void markStructureTagged(BlockPos structPos) {
-        taggedStructures.add(structPos.immutable());
-        setDirty();
+    public House getHouseForVillager(UUID villagerId) {
+        for (House house : registeredHouses) {
+            if (house.assignedVillagers.contains(villagerId)) {
+                return house;
+            }
+        }
+        return null;
     }
 
-    public void registerBed(BlockPos bedPos, int houseNumber, BlockPos villageCenter) {
-        BlockPos key = bedPos.immutable();
-        bedToHouseNumber.put(key, houseNumber);
-        bedToVillageCenter.put(key, villageCenter.immutable());
-        setDirty();
-    }
+    public static HouseNumberData load(CompoundTag tag) {
+        HouseNumberData data = new HouseNumberData();
 
-    public int getNextHouseNumberForVillage(BlockPos villageCenter) {
-        return villageNextNumber.getOrDefault(villageCenter.immutable(), 1);
-    }
+        ListTag houseList = tag.getList("Houses", Tag.TAG_COMPOUND);
+        for (int i = 0; i < houseList.size(); i++) {
+            CompoundTag hTag = houseList.getCompound(i);
+            String vId = hTag.getString("VillageId");
+            int num = hTag.getInt("Number");
+            BlockPos pos = BlockPos.of(hTag.getLong("Pos"));
+            int cap = hTag.getInt("Capacity");
 
-    public void incrementVillageHouseNumber(BlockPos villageCenter) {
-        BlockPos key = villageCenter.immutable();
-        villageNextNumber.put(key, getNextHouseNumberForVillage(key) + 1);
-        setDirty();
+            House house = new House(vId, num, pos, cap);
+            int villagerCount = hTag.getInt("VillagerCount");
+            for (int j = 0; j < villagerCount; j++) {
+                house.assignedVillagers.add(hTag.getUUID("Villager_" + j));
+            }
+            data.registeredHouses.add(house);
+            data.villageHouseCounters.put(vId, Math.max(data.villageHouseCounters.getOrDefault(vId, 0), num));
+        }
+        return data;
     }
 
     @Override
-    public CompoundTag save(CompoundTag tag, HolderLookup.Provider registries) {
-        ListTag bedsList = new ListTag();
-        for (Map.Entry<BlockPos, Integer> entry : bedToHouseNumber.entrySet()) {
-            BlockPos bed = entry.getKey();
-            BlockPos center = bedToVillageCenter.get(bed);
-            if (center == null) continue;
+    public CompoundTag save(CompoundTag tag) {
+        ListTag houseList = new ListTag();
+        for (House house : registeredHouses) {
+            CompoundTag hTag = new CompoundTag();
+            hTag.putString("VillageId", house.villageId);
+            hTag.putInt("Number", house.houseNumber);
+            hTag.putLong("Pos", house.centerPos.asLong());
+            hTag.putInt("Capacity", house.maxCapacity);
 
-            CompoundTag bTag = new CompoundTag();
-            bTag.putInt("bx", bed.getX());
-            bTag.putInt("by", bed.getY());
-            bTag.putInt("bz", bed.getZ());
-            bTag.putInt("num", entry.getValue());
-            bTag.putInt("cx", center.getX());
-            bTag.putInt("cy", center.getY());
-            bTag.putInt("cz", center.getZ());
-            bedsList.add(bTag);
+            hTag.putInt("VillagerCount", house.assignedVillagers.size());
+            int idx = 0;
+            for (UUID uuid : house.assignedVillagers) {
+                hTag.putUUID("Villager_" + idx++, uuid);
+            }
+            houseList.add(hTag);
         }
-        tag.put("beds", bedsList);
-
-        ListTag villagesList = new ListTag();
-        for (Map.Entry<BlockPos, Integer> entry : villageNextNumber.entrySet()) {
-            CompoundTag vTag = new CompoundTag();
-            vTag.putInt("cx", entry.getKey().getX());
-            vTag.putInt("cy", entry.getKey().getY());
-            vTag.putInt("cz", entry.getKey().getZ());
-            vTag.putInt("next", entry.getValue());
-            villagesList.add(vTag);
-        }
-        tag.put("villages", villagesList);
-
-        ListTag centersList = new ListTag();
-        for (BlockPos c : villageCenters) {
-            CompoundTag cTag = new CompoundTag();
-            cTag.putInt("x", c.getX());
-            cTag.putInt("y", c.getY());
-            cTag.putInt("z", c.getZ());
-            centersList.add(cTag);
-        }
-        tag.put("centers", centersList);
-
-        ListTag structsList = new ListTag();
-        for (BlockPos s : taggedStructures) {
-            CompoundTag sTag = new CompoundTag();
-            sTag.putInt("x", s.getX());
-            sTag.putInt("y", s.getY());
-            sTag.putInt("z", s.getZ());
-            structsList.add(sTag);
-        }
-        tag.put("structs", structsList);
-
+        tag.put("Houses", houseList);
         return tag;
-    }
-
-    public static HouseNumberData load(CompoundTag tag, HolderLookup.Provider registries) {
-        HouseNumberData data = new HouseNumberData();
-        ListTag bedsList = tag.getList("beds", CompoundTag.TAG_COMPOUND);
-        for (int i = 0; i < bedsList.size(); i++) {
-            CompoundTag bTag = bedsList.getCompound(i);
-            BlockPos bed = new BlockPos(bTag.getInt("bx"), bTag.getInt("by"), bTag.getInt("bz"));
-            BlockPos center = new BlockPos(bTag.getInt("cx"), bTag.getInt("cy"), bTag.getInt("cz"));
-            data.bedToHouseNumber.put(bed, bTag.getInt("num"));
-            data.bedToVillageCenter.put(bed, center);
-        }
-
-        ListTag villagesList = tag.getList("villages", CompoundTag.TAG_COMPOUND);
-        for (int i = 0; i < villagesList.size(); i++) {
-            CompoundTag vTag = villagesList.getCompound(i);
-            BlockPos center = new BlockPos(vTag.getInt("cx"), vTag.getInt("cy"), vTag.getInt("cz"));
-            data.villageNextNumber.put(center, vTag.getInt("next"));
-        }
-
-        ListTag centersList = tag.getList("centers", CompoundTag.TAG_COMPOUND);
-        for (int i = 0; i < centersList.size(); i++) {
-            CompoundTag cTag = centersList.getCompound(i);
-            data.villageCenters.add(new BlockPos(cTag.getInt("x"), cTag.getInt("y"), cTag.getInt("z")));
-        }
-
-        ListTag structsList = tag.getList("structs", CompoundTag.TAG_COMPOUND);
-        for (int i = 0; i < structsList.size(); i++) {
-            CompoundTag sTag = structsList.getCompound(i);
-            data.taggedStructures.add(new BlockPos(sTag.getInt("x"), sTag.getInt("y"), sTag.getInt("z")));
-        }
-
-        return data;
     }
 }
