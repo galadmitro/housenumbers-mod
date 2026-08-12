@@ -155,8 +155,8 @@ public class HouseNumberData extends SavedData {
     }
 
     public House registerOrUpdateHouse(ServerLevel level, BlockPos bedPos, BlockPos doorPos) {
-        // Increased merge radius to 14.0 blocks to properly merge multi-bed & multi-story houses
-        House existing = findHouseNear(bedPos, 14.0);
+        // Merge distance set to 4.5 blocks so adjacent separate houses are NOT combined
+        House existing = findHouseNear(bedPos, 4.5);
         if (existing != null) {
             existing.addBed(bedPos);
             if (doorPos != null && existing.doorPos == existing.homePos) {
@@ -246,7 +246,6 @@ public class HouseNumberData extends SavedData {
             House bestHouse = null;
             double bestDistSqr = Double.MAX_VALUE;
 
-            // Pass 1: Look for an available house in the villager's current village
             for (House house : registeredHouses) {
                 if (!house.isFull()) {
                     if (assignedVillageId != null && house.villageId != assignedVillageId) {
@@ -261,7 +260,6 @@ public class HouseNumberData extends SavedData {
                 }
             }
 
-            // Pass 2: Fallback to ANY available house in the world if Pass 1 found nothing
             if (bestHouse == null) {
                 for (House house : registeredHouses) {
                     if (!house.isFull()) {
@@ -285,9 +283,10 @@ public class HouseNumberData extends SavedData {
         int highestY = origin.getY();
         BlockPos.MutableBlockPos mut = new BlockPos.MutableBlockPos();
 
-        for (int x = -7; x <= 7; x++) {
-            for (int z = -7; z <= 7; z++) {
-                for (int y = 0; y <= 12; y++) {
+        // Scan 4 blocks around the bed position for the house roof
+        for (int x = -4; x <= 4; x++) {
+            for (int z = -4; z <= 4; z++) {
+                for (int y = 0; y <= 8; y++) {
                     mut.set(origin.getX() + x, origin.getY() + y, origin.getZ() + z);
                     BlockState state = level.getBlockState(mut);
                     if (isHouseStructureBlock(state)) {
@@ -301,9 +300,9 @@ public class HouseNumberData extends SavedData {
         int minZ = Integer.MAX_VALUE, maxZ = Integer.MIN_VALUE;
         boolean foundPeak = false;
 
-        for (int x = -7; x <= 7; x++) {
-            for (int z = -7; z <= 7; z++) {
-                for (int y = Math.max(origin.getY(), highestY - 2); y <= highestY; y++) {
+        for (int x = -4; x <= 4; x++) {
+            for (int z = -4; z <= 4; z++) {
+                for (int y = Math.max(origin.getY(), highestY - 1); y <= highestY; y++) {
                     mut.set(origin.getX() + x, y, origin.getZ() + z);
                     BlockState state = level.getBlockState(mut);
                     if (isHouseStructureBlock(state)) {
@@ -318,12 +317,12 @@ public class HouseNumberData extends SavedData {
         }
 
         if (!foundPeak) {
-            return new Vec3(origin.getX() + 0.5, origin.getY() + 3.5, origin.getZ() + 0.5);
+            return new Vec3(origin.getX() + 0.5, origin.getY() + 3.6, origin.getZ() + 0.5);
         }
 
         double centerX = (minX + maxX) / 2.0 + 0.5;
         double centerZ = (minZ + maxZ) / 2.0 + 0.5;
-        double topY = highestY + 1.2;
+        double topY = highestY + 1.6; // Clearly above the top roof block
 
         return new Vec3(centerX, topY, centerZ);
     }
@@ -356,7 +355,7 @@ public class HouseNumberData extends SavedData {
 
     private void spawnOrUpdateHouseTag(ServerLevel level, House house) {
         Vec3 tagPos = house.roofCenterPos;
-        AABB searchBox = new AABB(new BlockPos((int) tagPos.x, (int) tagPos.y, (int) tagPos.z)).inflate(12.0);
+        AABB searchBox = new AABB(new BlockPos((int) tagPos.x, (int) tagPos.y, (int) tagPos.z)).inflate(6.0);
         List<ArmorStand> existingStands = level.getEntitiesOfClass(ArmorStand.class, searchBox);
 
         String tagText = "House #" + house.houseNumber;
