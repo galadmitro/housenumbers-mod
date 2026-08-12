@@ -78,6 +78,7 @@ public class HouseNumberData extends SavedData {
     private int nextVillageId = 1;
     private final List<VillageCluster> clusters = new ArrayList<>();
     private final List<House> registeredHouses = new ArrayList<>();
+    private final Map<UUID, Integer> villagerVillageMap = new HashMap<>();
 
     public static HouseNumberData get(ServerLevel level) {
         return level.getDataStorage().computeIfAbsent(
@@ -104,13 +105,27 @@ public class HouseNumberData extends SavedData {
         return null;
     }
 
-    private VillageCluster findClusterNear(BlockPos pos) {
+    public VillageCluster findClusterNear(BlockPos pos) {
         for (VillageCluster cluster : clusters) {
             if (cluster.isNear(pos, VILLAGE_RADIUS)) {
                 return cluster;
             }
         }
         return null;
+    }
+
+    public Integer getVillageForVillager(UUID villagerId) {
+        House house = getHouseForVillager(villagerId);
+        if (house != null) {
+            villagerVillageMap.put(villagerId, house.villageId);
+            return house.villageId;
+        }
+        return villagerVillageMap.get(villagerId);
+    }
+
+    public void setVillagerVillage(UUID villagerId, int villageId) {
+        villagerVillageMap.put(villagerId, villageId);
+        setDirty();
     }
 
     public House registerHouse(ServerLevel level, BlockPos homePos, BlockPos bedPos, BlockPos doorPos, int maxCapacity) {
@@ -146,10 +161,12 @@ public class HouseNumberData extends SavedData {
 
     public boolean assignVillagerToHouse(UUID villagerId, House house) {
         if (house.assignedVillagers.contains(villagerId)) {
+            villagerVillageMap.put(villagerId, house.villageId);
             return true;
         }
         if (!house.isFull()) {
             house.assignedVillagers.add(villagerId);
+            villagerVillageMap.put(villagerId, house.villageId);
             setDirty();
             return true;
         }
@@ -165,7 +182,6 @@ public class HouseNumberData extends SavedData {
         return null;
     }
 
-    // --- PURGE DEAD/DESPAWNED VILLAGERS FROM CLAIMED HOUSES ---
     public void cleanupDeadVillagers(ServerLevel level) {
         boolean changed = false;
         for (House house : registeredHouses) {
@@ -175,6 +191,7 @@ public class HouseNumberData extends SavedData {
                 Entity entity = level.getEntity(uuid);
                 if (entity != null && (!entity.isAlive() || !(entity instanceof Villager))) {
                     iterator.remove();
+                    villagerVillageMap.remove(uuid);
                     changed = true;
                 }
             }
@@ -191,10 +208,26 @@ public class HouseNumberData extends SavedData {
 
         for (Villager villager : villagers) {
             BlockPos villagerPos = villager.blockPosition();
+            UUID vId = villager.getUUID();
+            
+            Integer assignedVillageId = villagerVillageMap.get(vId);
+            if (assignedVillageId == null) {
+                VillageCluster nearCluster = findClusterNear(villagerPos);
+                if (nearCluster != null) {
+                    assignedVillageId = nearCluster.villageId;
+                    villagerVillageMap.put(vId, assignedVillageId);
+                }
+            }
+
             House bestHouse = null;
             double bestDistSqr = Double.MAX_VALUE;
 
             for (House house : registeredHouses) {
+                // STRICT VILLAGE ISOLATION: Only assign houses matching villager's village
+                if (assignedVillageId != null && house.villageId != assignedVillageId) {
+                    continue;
+                }
+
                 if (!house.isFull()) {
                     BlockPos housePos = house.bedPos != null ? house.bedPos : house.homePos;
                     double distSqr = housePos.distSqr(villagerPos);
@@ -206,7 +239,7 @@ public class HouseNumberData extends SavedData {
             }
 
             if (bestHouse != null) {
-                assignVillagerToHouse(villager.getUUID(), bestHouse);
+                assignVillagerToHouse(vId, bestHouse);
             }
         }
     }
@@ -334,7 +367,9 @@ public class HouseNumberData extends SavedData {
             House house = new House(vId, num, homePos, bedPos, doorPos, roofCenter, cap);
             int villagerCount = hTag.getInt("VillagerCount");
             for (int j = 0; j < villagerCount; j++) {
-                house.assignedVillagers.add(hTag.getUUID("Villager_" + j));
+                UUID vUuid = hTag.getUUID("Villager_" + j);
+                house.assignedVillagers.add(vUuid);
+                data.villagerVillageMap.put(vUuid, vId);
             }
             data.registeredHouses.add(house);
 
