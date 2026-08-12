@@ -32,7 +32,7 @@ public class HouseNumberData extends SavedData {
         public final BlockPos bedPos;
         public final BlockPos doorPos;
         public Vec3 roofCenterPos;
-        public final int maxCapacity;
+        public int maxCapacity;
         public final Set<UUID> assignedVillagers = new HashSet<>();
 
         public House(int villageId, int houseNumber, BlockPos homePos, BlockPos bedPos, BlockPos doorPos, Vec3 roofCenterPos, int maxCapacity) {
@@ -42,7 +42,7 @@ public class HouseNumberData extends SavedData {
             this.bedPos = bedPos;
             this.doorPos = doorPos;
             this.roofCenterPos = roofCenterPos;
-            this.maxCapacity = maxCapacity;
+            this.maxCapacity = Math.max(1, maxCapacity);
         }
 
         public boolean isFull() {
@@ -115,6 +115,10 @@ public class HouseNumberData extends SavedData {
     public House registerHouse(ServerLevel level, BlockPos homePos, BlockPos bedPos, BlockPos doorPos, int maxCapacity) {
         House existing = findExistingHouseAt(homePos);
         if (existing != null) {
+            if (maxCapacity > existing.maxCapacity) {
+                existing.maxCapacity = maxCapacity;
+                setDirty();
+            }
             return existing;
         }
 
@@ -129,7 +133,7 @@ public class HouseNumberData extends SavedData {
         Vec3 centerRoof = calculateRoofCenter(level, targetPos);
         int houseNumber = cluster.nextHouseNumber++;
 
-        House newHouse = new House(cluster.villageId, houseNumber, homePos, bedPos, doorPos, centerRoof, Math.max(1, maxCapacity));
+        House newHouse = new House(cluster.villageId, houseNumber, homePos, bedPos, doorPos, centerRoof, maxCapacity);
         cluster.houses.add(newHouse);
         registeredHouses.add(newHouse);
 
@@ -160,7 +164,6 @@ public class HouseNumberData extends SavedData {
         return null;
     }
 
-    // Immediately pairs all homeless villagers with unassigned houses upon world/village loading
     public void autoAssignLoadedVillagers(ServerLevel level) {
         List<? extends Villager> villagers = level.getEntities(EntityType.VILLAGER, v -> !v.isBaby() && getHouseForVillager(v.getUUID()) == null);
 
@@ -186,12 +189,10 @@ public class HouseNumberData extends SavedData {
         }
     }
 
-    // Accurate roof centering: Scans upwards to find top roof blocks only, ignoring floor/dirt/pathways
     private Vec3 calculateRoofCenter(ServerLevel level, BlockPos origin) {
         int highestY = origin.getY();
         BlockPos.MutableBlockPos mut = new BlockPos.MutableBlockPos();
 
-        // 1. Find the highest roof Y level
         for (int x = -7; x <= 7; x++) {
             for (int z = -7; z <= 7; z++) {
                 for (int y = 0; y <= 12; y++) {
@@ -204,7 +205,6 @@ public class HouseNumberData extends SavedData {
             }
         }
 
-        // 2. Average X and Z for the roof peak layers (top 2 Y levels)
         int minX = Integer.MAX_VALUE, maxX = Integer.MIN_VALUE;
         int minZ = Integer.MAX_VALUE, maxZ = Integer.MIN_VALUE;
         boolean foundPeak = false;
@@ -277,18 +277,17 @@ public class HouseNumberData extends SavedData {
 
         if (existing != null) {
             existing.setPos(tagPos.x, tagPos.y, tagPos.z);
+            existing.setInvisible(true);
+            existing.setNoGravity(true);
         } else {
             ArmorStand marker = new ArmorStand(EntityType.ARMOR_STAND, level);
             marker.setPos(tagPos.x, tagPos.y, tagPos.z);
             marker.setCustomName(Component.literal("House #" + house.houseNumber));
             marker.setCustomNameVisible(true);
+
+            // Ensures the ArmorStand model stays hidden while showing the text tag above the roof
             marker.setInvisible(true);
             marker.setNoGravity(true);
-
-            // Fixed: Set Marker flag via NBT tag data to bypass private access restriction in 1.21
-            CompoundTag markerTag = new CompoundTag();
-            markerTag.putBoolean("Marker", true);
-            marker.readAdditionalSaveData(markerTag);
 
             level.addFreshEntity(marker);
         }
