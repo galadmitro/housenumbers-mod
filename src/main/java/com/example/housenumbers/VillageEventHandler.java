@@ -1,289 +1,294 @@
 package com.example.housenumbers;
 
-import com.example.housenumbers.HouseNumberData.House;
 import net.minecraft.core.BlockPos;
-import net.minecraft.core.GlobalPos;
+import net.minecraft.core.HolderLookup;
+import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.ListTag;
+import net.minecraft.nbt.Tag;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerLevel;
-import net.minecraft.tags.BlockTags;
-import net.minecraft.world.entity.ai.memory.MemoryModuleType;
-import net.minecraft.world.entity.ai.memory.WalkTarget;
+import net.minecraft.util.datafix.DataFixTypes;
+import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.decoration.ArmorStand;
 import net.minecraft.world.entity.npc.Villager;
-import net.minecraft.world.level.block.DoorBlock;
 import net.minecraft.world.level.block.state.BlockState;
-import net.minecraft.world.level.block.state.properties.DoubleBlockHalf;
-import net.neoforged.bus.api.SubscribeEvent;
-import net.neoforged.fml.common.EventBusSubscriber;
-import net.neoforged.neoforge.event.tick.EntityTickEvent;
+import net.minecraft.world.level.saveddata.SavedData;
+import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.Vec3;
 
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.UUID;
+import java.util.*;
 
-@EventBusSubscriber(modid = HouseNumbersMod.MODID)
-public class VillageEventHandler {
+public class HouseNumberData extends SavedData {
+    private static final String DATA_NAME = "house_number_data";
+    public static final double VILLAGE_RADIUS = 64.0; // Radius threshold to cluster a village
 
-    private static final Map<UUID, UUID> BABY_PARENT_MAP = new HashMap<>();
+    public static class House {
+        public final int villageId;
+        public final int houseNumber;
+        public final BlockPos homePos;
+        public final BlockPos bedPos;
+        public final BlockPos doorPos;
+        public final Vec3 roofCenterPos;
+        public final int maxCapacity;
+        public final Set<UUID> assignedVillagers = new HashSet<>();
 
-    @SubscribeEvent
-    public static void onEntityTick(EntityTickEvent.Post event) {
-        if (!(event.getEntity() instanceof Villager villager) || villager.level().isClientSide()) {
-            return;
+        public House(int villageId, int houseNumber, BlockPos homePos, BlockPos bedPos, BlockPos doorPos, Vec3 roofCenterPos, int maxCapacity) {
+            this.villageId = villageId;
+            this.houseNumber = houseNumber;
+            this.homePos = homePos;
+            this.bedPos = bedPos;
+            this.doorPos = doorPos;
+            this.roofCenterPos = roofCenterPos;
+            this.maxCapacity = maxCapacity;
         }
 
-        // --- 1. PREVENT SLIDING / WALKING WHILE SLEEPING ---
-        if (villager.isSleeping()) {
-            villager.getNavigation().stop();
-            villager.getBrain().eraseMemory(MemoryModuleType.WALK_TARGET);
-            return; // Exit early so no movement tasks execute while in bed
+        public boolean isFull() {
+            return assignedVillagers.size() >= maxCapacity;
         }
 
-        ServerLevel level = (ServerLevel) villager.level();
-        HouseNumberData houseData = HouseNumberData.get(level);
-        UUID villagerId = villager.getUUID();
-
-        // --- PREVENT STARING & INTERACTION LOCKS ---
-        if (villager.getBrain().hasMemoryValue(MemoryModuleType.INTERACTION_TARGET)) {
-            villager.getBrain().eraseMemory(MemoryModuleType.INTERACTION_TARGET);
-        }
-        if (villager.getBrain().hasMemoryValue(MemoryModuleType.LOOK_TARGET)) {
-            villager.getBrain().eraseMemory(MemoryModuleType.LOOK_TARGET);
-        }
-
-        // --- 2. SCAN HOUSES & INSTANT ASSIGNMENT ON LOAD ---
-        if (villager.tickCount % 40 == 0) {
-            BlockPos villagerPos = villager.blockPosition();
-            BlockPos.MutableBlockPos mutPos = new BlockPos.MutableBlockPos();
-
-            for (int x = -12; x <= 12; x++) {
-                for (int y = -4; y <= 4; y++) {
-                    for (int z = -12; z <= 12; z++) {
-                        mutPos.set(villagerPos.getX() + x, villagerPos.getY() + y, villagerPos.getZ() + z);
-                        BlockState state = level.getBlockState(mutPos);
-
-                        if (state.is(BlockTags.BEDS)) {
-                            BlockPos bedPos = mutPos.immutable();
-                            if (houseData.findExistingHouseAt(bedPos) == null) {
-                                BlockPos doorPos = findDoorNear(level, bedPos);
-                                houseData.registerHouse(level, bedPos, bedPos, doorPos != null ? doorPos : bedPos, 1);
-                            }
-                        }
-                    }
-                }
-            }
-            houseData.autoAssignLoadedVillagers(level);
-        }
-
-        // --- 3. DOOR & NIGHT BOUNDARY LOGIC ---
-        for (House house : houseData.getAllHouses()) {
-            if (house.doorPos != null) {
-                BlockState doorState = level.getBlockState(house.doorPos);
-                if (doorState.getBlock() instanceof DoorBlock) {
-                    BlockPos lowerDoorPos = doorState.getValue(DoorBlock.HALF) == DoubleBlockHalf.UPPER 
-                        ? house.doorPos.below() 
-                        : house.doorPos;
-
-                    double distSqrToDoor = villager.distanceToSqr(lowerDoorPos.getX() + 0.5, lowerDoorPos.getY(), lowerDoorPos.getZ() + 0.5);
-
-                    if (distSqrToDoor <= 4.0) {
-                        BlockPos houseCenter = house.bedPos != null ? house.bedPos : house.homePos;
-                        double villagerDistToCenter = villager.blockPosition().distSqr(houseCenter);
-                        double doorDistToCenter = lowerDoorPos.distSqr(houseCenter);
-
-                        boolean isInside = villagerDistToCenter < doorDistToCenter;
-                        boolean isOwnerOrBaby = house.isOwner(villagerId) || isBabyOfOwner(villager, house);
-
-                        if (isInside) {
-                            if (level.isNight()) {
-                                if (isOwnerOrBaby) {
-                                    // Soft boundary: Cancel movement if they try to path outside at night
-                                    if (villager.getNavigation().getPath() != null) {
-                                        BlockPos targetPos = villager.getNavigation().getPath().getTarget();
-                                        if (targetPos.distSqr(houseCenter) >= doorDistToCenter) {
-                                            villager.getNavigation().stop();
-                                            villager.getBrain().eraseMemory(MemoryModuleType.WALK_TARGET);
-                                        }
-                                    }
-                                } else {
-                                    // Evict non-owners trapped inside at night
-                                    BlockPos outsidePos = lowerDoorPos.offset(
-                                        lowerDoorPos.getX() - houseCenter.getX(),
-                                        0,
-                                        lowerDoorPos.getZ() - houseCenter.getZ()
-                                    );
-                                    villager.getNavigation().moveTo(outsidePos.getX(), outsidePos.getY(), outsidePos.getZ(), 0.5D);
-                                }
-                            } else {
-                                // DAYTIME: Owners and babies open doors when leaving
-                                if (isOwnerOrBaby) {
-                                    openDoorIfClosed(level, lowerDoorPos);
-                                }
-                            }
-                        } else {
-                            // OUTSIDE LOGIC
-                            if (isOwnerOrBaby) {
-                                openDoorIfClosed(level, lowerDoorPos);
-                            } else {
-                                // Non-owners outside: Prevent door opening & cancel entry paths
-                                if (villager.getNavigation().getPath() != null) {
-                                    BlockPos targetPos = villager.getNavigation().getPath().getTarget();
-                                    if (targetPos.distSqr(houseCenter) < 16.0) {
-                                        villager.getNavigation().stop();
-                                        villager.getBrain().eraseMemory(MemoryModuleType.WALK_TARGET);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // --- 4. BABY VILLAGER MANAGEMENT ---
-        if (villager.isBaby()) {
-            if (!BABY_PARENT_MAP.containsKey(villagerId)) {
-                List<Villager> nearby = level.getEntitiesOfClass(
-                    Villager.class,
-                    villager.getBoundingBox().inflate(12.0)
-                );
-
-                for (Villager v : nearby) {
-                    if (!v.isBaby()) {
-                        BABY_PARENT_MAP.put(villagerId, v.getUUID());
-                        break;
-                    }
-                }
-            }
-
-            House parentHouse = null;
-            Villager parent = null;
-
-            if (BABY_PARENT_MAP.containsKey(villagerId)) {
-                UUID parentId = BABY_PARENT_MAP.get(villagerId);
-                parent = (Villager) level.getEntity(parentId);
-                if (parent != null && parent.isAlive()) {
-                    parentHouse = houseData.getHouseForVillager(parent.getUUID());
-                }
-            }
-
-            if (parentHouse != null) {
-                villager.setCustomName(Component.literal("Baby (House #" + parentHouse.houseNumber + ")"));
-                villager.setCustomNameVisible(true);
-
-                BlockPos targetPos = parentHouse.bedPos != null ? parentHouse.bedPos : parentHouse.homePos;
-
-                if (level.isNight()) {
-                    double distSqrToHouse = villager.blockPosition().distSqr(targetPos);
-                    if (distSqrToHouse > 3.0) {
-                        if (villager.tickCount % 20 == 0) {
-                            villager.getBrain().setMemory(MemoryModuleType.WALK_TARGET, new WalkTarget(targetPos, 0.5F, 1));
-                            villager.getNavigation().moveTo(targetPos.getX(), targetPos.getY(), targetPos.getZ(), 0.5D);
-                        }
-                    } else {
-                        // Already inside house center, stay put
-                        villager.getNavigation().stop();
-                        villager.getBrain().eraseMemory(MemoryModuleType.WALK_TARGET);
-                    }
-                } else {
-                    // DAYTIME: Follow parent with buffer distance
-                    if (parent != null) {
-                        double distSqrToParent = villager.distanceToSqr(parent);
-                        if (distSqrToParent > 16.0 && villager.tickCount % 40 == 0) {
-                            villager.getNavigation().moveTo(parent, 0.5D);
-                        } else if (distSqrToParent <= 9.0) {
-                            villager.getNavigation().stop();
-                            villager.getBrain().eraseMemory(MemoryModuleType.WALK_TARGET);
-                        }
-                    }
-                }
-            } else if (level.isNight()) {
-                villager.getNavigation().stop();
-                villager.getBrain().eraseMemory(MemoryModuleType.WALK_TARGET);
-            }
-
-            return;
-        }
-
-        // --- 5. ADULT VILLAGER NAMING & NIGHT SLEEPING ---
-        House assignedHouse = houseData.getHouseForVillager(villagerId);
-
-        if (assignedHouse != null) {
-            villager.setCustomName(Component.literal("House #" + assignedHouse.houseNumber));
-            villager.setCustomNameVisible(true);
-
-            BlockPos targetPos = (assignedHouse.bedPos != null) ? assignedHouse.bedPos : assignedHouse.homePos;
-            villager.getBrain().setMemory(
-                MemoryModuleType.HOME,
-                GlobalPos.of(level.dimension(), targetPos)
-            );
-
-            if (level.isNight()) {
-                double distSqr = villager.blockPosition().distSqr(targetPos);
-
-                if (assignedHouse.bedPos != null && level.getBlockState(assignedHouse.bedPos).is(BlockTags.BEDS)) {
-                    if (distSqr <= 3.0 && !villager.isSleeping()) {
-                        villager.getNavigation().stop();
-                        villager.getBrain().eraseMemory(MemoryModuleType.WALK_TARGET);
-                        villager.startSleeping(assignedHouse.bedPos);
-                    } else if (!villager.isSleeping() && villager.tickCount % 40 == 0) {
-                        villager.getBrain().setMemory(MemoryModuleType.WALK_TARGET, new WalkTarget(targetPos, 0.5F, 1));
-                        villager.getNavigation().moveTo(targetPos.getX(), targetPos.getY(), targetPos.getZ(), 0.5D);
-                    }
-                } else {
-                    // Bedless house: Move inside and stay inside at night
-                    if (distSqr > 3.0) {
-                        if (villager.tickCount % 40 == 0) {
-                            villager.getBrain().setMemory(MemoryModuleType.WALK_TARGET, new WalkTarget(targetPos, 0.5F, 1));
-                            villager.getNavigation().moveTo(targetPos.getX(), targetPos.getY(), targetPos.getZ(), 0.5D);
-                        }
-                    } else {
-                        villager.getNavigation().stop();
-                        villager.getBrain().eraseMemory(MemoryModuleType.WALK_TARGET);
-                    }
-                }
-            }
-        } else {
-            if (villager.getBrain().hasMemoryValue(MemoryModuleType.HOME)) {
-                villager.getBrain().eraseMemory(MemoryModuleType.HOME);
-            }
-            if (villager.isSleeping()) {
-                villager.stopSleeping();
-            }
+        public boolean isOwner(UUID villagerId) {
+            return assignedVillagers.contains(villagerId);
         }
     }
 
-    private static BlockPos findDoorNear(ServerLevel level, BlockPos pos) {
-        BlockPos.MutableBlockPos mutPos = new BlockPos.MutableBlockPos();
-        for (int x = -5; x <= 5; x++) {
-            for (int y = -2; y <= 2; y++) {
-                for (int z = -5; z <= 5; z++) {
-                    mutPos.set(pos.getX() + x, pos.getY() + y, pos.getZ() + z);
-                    if (level.getBlockState(mutPos).is(BlockTags.DOORS)) {
-                        return mutPos.immutable();
-                    }
+    public static class VillageCluster {
+        public final int villageId;
+        public int nextHouseNumber = 1;
+        public final List<House> houses = new ArrayList<>();
+
+        public VillageCluster(int villageId) {
+            this.villageId = villageId;
+        }
+
+        public boolean isNear(BlockPos pos, double maxDistance) {
+            for (House h : houses) {
+                BlockPos target = h.bedPos != null ? h.bedPos : h.homePos;
+                if (target.closerThan(pos, maxDistance)) {
+                    return true;
                 }
+            }
+            return false;
+        }
+    }
+
+    private int nextVillageId = 1;
+    private final List<VillageCluster> clusters = new ArrayList<>();
+    private final List<House> registeredHouses = new ArrayList<>();
+
+    public static HouseNumberData get(ServerLevel level) {
+        return level.getDataStorage().computeIfAbsent(
+            new SavedData.Factory<HouseNumberData>(
+                HouseNumberData::new,
+                HouseNumberData::load,
+                (DataFixTypes) null
+            ),
+            DATA_NAME
+        );
+    }
+
+    public List<House> getAllHouses() {
+        return Collections.unmodifiableList(registeredHouses);
+    }
+
+    public House findExistingHouseAt(BlockPos pos) {
+        for (House house : registeredHouses) {
+            BlockPos target = house.bedPos != null ? house.bedPos : house.homePos;
+            if (target.closerThan(pos, 6.0)) {
+                return house;
             }
         }
         return null;
     }
 
-    private static void openDoorIfClosed(ServerLevel level, BlockPos doorPos) {
-        BlockState state = level.getBlockState(doorPos);
-        if (state.getBlock() instanceof DoorBlock) {
-            if (!state.getValue(DoorBlock.OPEN)) {
-                level.setBlock(doorPos, state.setValue(DoorBlock.OPEN, true), 3);
+    private VillageCluster findClusterNear(BlockPos pos) {
+        for (VillageCluster cluster : clusters) {
+            if (cluster.isNear(pos, VILLAGE_RADIUS)) {
+                return cluster;
+            }
+        }
+        return null;
+    }
+
+    public House registerHouse(ServerLevel level, BlockPos homePos, BlockPos bedPos, BlockPos doorPos, int maxCapacity) {
+        House existing = findExistingHouseAt(homePos);
+        if (existing != null) {
+            return existing;
+        }
+
+        BlockPos targetPos = bedPos != null ? bedPos : homePos;
+        VillageCluster cluster = findClusterNear(targetPos);
+
+        if (cluster == null) {
+            cluster = new VillageCluster(nextVillageId++);
+            clusters.add(cluster);
+        }
+
+        Vec3 centerRoof = calculateRoofCenter(level, targetPos);
+        int houseNumber = cluster.nextHouseNumber++;
+
+        House newHouse = new House(cluster.villageId, houseNumber, homePos, bedPos, doorPos, centerRoof, Math.max(1, maxCapacity));
+        cluster.houses.add(newHouse);
+        registeredHouses.add(newHouse);
+
+        spawnHouseTag(level, newHouse);
+
+        setDirty();
+        return newHouse;
+    }
+
+    public boolean assignVillagerToHouse(UUID villagerId, House house) {
+        if (house.assignedVillagers.contains(villagerId)) {
+            return true;
+        }
+        if (!house.isFull()) {
+            house.assignedVillagers.add(villagerId);
+            setDirty();
+            return true;
+        }
+        return false;
+    }
+
+    public House getHouseForVillager(UUID villagerId) {
+        for (House house : registeredHouses) {
+            if (house.assignedVillagers.contains(villagerId)) {
+                return house;
+            }
+        }
+        return null;
+    }
+
+    // Assigns homeless villagers ONLY to available houses in their local village radius
+    public void autoAssignLoadedVillagers(ServerLevel level) {
+        List<? extends Villager> villagers = level.getEntities(EntityType.VILLAGER, v -> !v.isBaby() && getHouseForVillager(v.getUUID()) == null);
+        for (Villager villager : villagers) {
+            BlockPos villagerPos = villager.blockPosition();
+            for (House house : registeredHouses) {
+                BlockPos housePos = house.bedPos != null ? house.bedPos : house.homePos;
+                if (housePos.closerThan(villagerPos, VILLAGE_RADIUS) && !house.isFull()) {
+                    assignVillagerToHouse(villager.getUUID(), house);
+                    break;
+                }
             }
         }
     }
 
-    private static boolean isBabyOfOwner(Villager villager, House house) {
-        if (!villager.isBaby()) return false;
-        UUID babyId = villager.getUUID();
-        if (BABY_PARENT_MAP.containsKey(babyId)) {
-            UUID parentId = BABY_PARENT_MAP.get(babyId);
-            return house.isOwner(parentId);
+    private Vec3 calculateRoofCenter(ServerLevel level, BlockPos origin) {
+        int minX = origin.getX(), maxX = origin.getX();
+        int minZ = origin.getZ(), maxZ = origin.getZ();
+        int maxY = origin.getY();
+
+        BlockPos.MutableBlockPos mut = new BlockPos.MutableBlockPos();
+        for (int x = -5; x <= 5; x++) {
+            for (int z = -5; z <= 5; z++) {
+                for (int y = 0; y <= 8; y++) {
+                    mut.set(origin.getX() + x, origin.getY() + y, origin.getZ() + z);
+                    BlockState state = level.getBlockState(mut);
+                    if (!state.isAir()) {
+                        minX = Math.min(minX, mut.getX());
+                        maxX = Math.max(maxX, mut.getX());
+                        minZ = Math.min(minZ, mut.getZ());
+                        maxZ = Math.max(maxZ, mut.getZ());
+                        maxY = Math.max(maxY, mut.getY());
+                    }
+                }
+            }
         }
-        return false;
+
+        double centerX = (minX + maxX) / 2.0 + 0.5;
+        double centerZ = (minZ + maxZ) / 2.0 + 0.5;
+        double topY = maxY + 1.2;
+
+        return new Vec3(centerX, topY, centerZ);
+    }
+
+    private void spawnHouseTag(ServerLevel level, House house) {
+        Vec3 tagPos = house.roofCenterPos;
+        AABB searchBox = new AABB(new BlockPos((int) tagPos.x, (int) tagPos.y, (int) tagPos.z)).inflate(3.0);
+        List<ArmorStand> existingStands = level.getEntitiesOfClass(ArmorStand.class, searchBox);
+
+        boolean alreadyExists = false;
+        for (ArmorStand stand : existingStands) {
+            if (stand.getCustomName() != null && stand.getCustomName().getString().contains("House #")) {
+                alreadyExists = true;
+                break;
+            }
+        }
+
+        if (!alreadyExists) {
+            ArmorStand marker = new ArmorStand(EntityType.ARMOR_STAND, level);
+            marker.setPos(tagPos.x, tagPos.y, tagPos.z);
+            marker.setCustomName(Component.literal("House #" + house.houseNumber));
+            marker.setCustomNameVisible(true);
+            marker.setInvisible(true);
+            marker.setNoGravity(true);
+            level.addFreshEntity(marker);
+        }
+    }
+
+    public static HouseNumberData load(CompoundTag tag, HolderLookup.Provider registries) {
+        HouseNumberData data = new HouseNumberData();
+        data.nextVillageId = tag.contains("NextVillageId") ? tag.getInt("NextVillageId") : 1;
+
+        Map<Integer, VillageCluster> clusterMap = new HashMap<>();
+
+        ListTag houseList = tag.getList("Houses", Tag.TAG_COMPOUND);
+        for (int i = 0; i < houseList.size(); i++) {
+            CompoundTag hTag = houseList.getCompound(i);
+            int vId = hTag.contains("VillageId") ? hTag.getInt("VillageId") : 1;
+            int num = hTag.getInt("Number");
+            BlockPos homePos = BlockPos.of(hTag.getLong("HomePos"));
+            BlockPos bedPos = hTag.contains("BedPos") ? BlockPos.of(hTag.getLong("BedPos")) : null;
+            BlockPos doorPos = hTag.contains("DoorPos") ? BlockPos.of(hTag.getLong("DoorPos")) : homePos;
+            Vec3 roofCenter = new Vec3(hTag.getDouble("RoofX"), hTag.getDouble("RoofY"), hTag.getDouble("RoofZ"));
+            int cap = hTag.getInt("Capacity");
+
+            House house = new House(vId, num, homePos, bedPos, doorPos, roofCenter, cap);
+            int villagerCount = hTag.getInt("VillagerCount");
+            for (int j = 0; j < villagerCount; j++) {
+                house.assignedVillagers.add(hTag.getUUID("Villager_" + j));
+            }
+            data.registeredHouses.add(house);
+
+            VillageCluster cluster = clusterMap.computeIfAbsent(vId, id -> {
+                VillageCluster c = new VillageCluster(id);
+                data.clusters.add(c);
+                return c;
+            });
+            cluster.houses.add(house);
+            cluster.nextHouseNumber = Math.max(cluster.nextHouseNumber, num + 1);
+        }
+        return data;
+    }
+
+    @Override
+    public CompoundTag save(CompoundTag tag, HolderLookup.Provider registries) {
+        tag.putInt("NextVillageId", nextVillageId);
+
+        ListTag houseList = new ListTag();
+        for (House house : registeredHouses) {
+            CompoundTag hTag = new CompoundTag();
+            hTag.putInt("VillageId", house.villageId);
+            hTag.putInt("Number", house.houseNumber);
+            hTag.putLong("HomePos", house.homePos.asLong());
+            if (house.bedPos != null) {
+                hTag.putLong("BedPos", house.bedPos.asLong());
+            }
+            if (house.doorPos != null) {
+                hTag.putLong("DoorPos", house.doorPos.asLong());
+            }
+            hTag.putDouble("RoofX", house.roofCenterPos.x);
+            hTag.putDouble("RoofY", house.roofCenterPos.y);
+            hTag.putDouble("RoofZ", house.roofCenterPos.z);
+            hTag.putInt("Capacity", house.maxCapacity);
+
+            hTag.putInt("VillagerCount", house.assignedVillagers.size());
+            int idx = 0;
+            for (UUID uuid : house.assignedVillagers) {
+                hTag.putUUID("Villager_" + idx++, uuid);
+            }
+            houseList.add(hTag);
+        }
+        tag.put("Houses", houseList);
+        return tag;
     }
 }
