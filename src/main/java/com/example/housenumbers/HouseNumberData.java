@@ -284,7 +284,12 @@ public class HouseNumberData extends SavedData {
             marker.setCustomNameVisible(true);
             marker.setInvisible(true);
             marker.setNoGravity(true);
-            marker.setMarker(true);
+
+            // Fixed: Set Marker flag via NBT tag data to bypass private access restriction in 1.21
+            CompoundTag markerTag = new CompoundTag();
+            markerTag.putBoolean("Marker", true);
+            marker.readAdditionalSaveData(markerTag);
+
             level.addFreshEntity(marker);
         }
     }
