@@ -36,21 +36,20 @@ public class VillageEventHandler {
         HouseNumberData houseData = HouseNumberData.get(level);
         UUID villagerId = villager.getUUID();
 
-        // --- 1. SCAN AND REGISTER NEARBY HOUSES (Ensures all village houses get tags) ---
-        if (villager.tickCount % 60 == 0) {
+        // --- 1. SCAN HOUSES & INSTANT ASSIGNMENT ON LOAD ---
+        if (villager.tickCount % 40 == 0) {
             BlockPos villagerPos = villager.blockPosition();
             BlockPos.MutableBlockPos mutPos = new BlockPos.MutableBlockPos();
 
-            for (int x = -10; x <= 10; x++) {
-                for (int y = -3; y <= 3; y++) {
-                    for (int z = -10; z <= 10; z++) {
+            for (int x = -12; x <= 12; x++) {
+                for (int y = -4; y <= 4; y++) {
+                    for (int z = -12; z <= 12; z++) {
                         mutPos.set(villagerPos.getX() + x, villagerPos.getY() + y, villagerPos.getZ() + z);
                         BlockState state = level.getBlockState(mutPos);
 
                         if (state.is(BlockTags.BEDS)) {
                             BlockPos bedPos = mutPos.immutable();
                             if (houseData.findExistingHouseAt(bedPos) == null) {
-                                // Find associated door nearby
                                 BlockPos doorPos = findDoorNear(level, bedPos);
                                 houseData.registerHouse(level, bedPos, bedPos, doorPos != null ? doorPos : bedPos, 1);
                             }
@@ -58,14 +57,15 @@ public class VillageEventHandler {
                     }
                 }
             }
+            // Instantly assign any homeless villagers upon load/scan
+            houseData.autoAssignLoadedVillagers(level);
         }
 
-        // --- 2. DOOR SECURITY & ESCAPE LOGIC ---
+        // --- 2. DOOR LOGIC & IGNORING NON-OWNED HOUSES ---
         for (House house : houseData.getAllHouses()) {
             if (house.doorPos != null) {
                 BlockState doorState = level.getBlockState(house.doorPos);
                 if (doorState.getBlock() instanceof DoorBlock) {
-                    // Normalize to lower half of door
                     BlockPos lowerDoorPos = doorState.getValue(DoorBlock.HALF) == DoubleBlockHalf.UPPER 
                         ? house.doorPos.below() 
                         : house.doorPos;
@@ -77,13 +77,14 @@ public class VillageEventHandler {
                         double villagerDistToCenter = villager.blockPosition().distSqr(houseCenter);
                         double doorDistToCenter = lowerDoorPos.distSqr(houseCenter);
 
-                        // Determine if villager is INSIDE or OUTSIDE
                         boolean isInside = villagerDistToCenter < doorDistToCenter;
+                        boolean isOwnerOrBaby = house.isOwner(villagerId) || isBabyOfOwner(villager, house);
 
                         if (isInside) {
-                            // Anyone inside CAN open the door to exit calmly
-                            setDoorOpen(level, lowerDoorPos, true);
-                            if (!house.isOwner(villagerId) && level.isNight()) {
+                            // CAN open from inside to exit (owners and trapped guests)
+                            openDoorIfClosed(level, lowerDoorPos);
+
+                            if (!isOwnerOrBaby && level.isNight()) {
                                 BlockPos outsidePos = lowerDoorPos.offset(
                                     lowerDoorPos.getX() - houseCenter.getX(),
                                     0,
@@ -92,11 +93,19 @@ public class VillageEventHandler {
                                 villager.getNavigation().moveTo(outsidePos.getX(), outsidePos.getY(), outsidePos.getZ(), 0.5D);
                             }
                         } else {
-                            // Outside: Only the owner can open the door
-                            if (house.isOwner(villagerId) || isBabyOfOwner(villager, house)) {
-                                setDoorOpen(level, lowerDoorPos, true);
+                            // OUTSIDE LOGIC
+                            if (isOwnerOrBaby) {
+                                openDoorIfClosed(level, lowerDoorPos);
                             } else {
-                                setDoorOpen(level, lowerDoorPos, false);
+                                // Non-owner outside: CANNOT open door & will NOT enter door frame
+                                if (villager.getNavigation().getPath() != null) {
+                                    BlockPos targetPos = villager.getNavigation().getPath().getTarget();
+                                    if (targetPos.distSqr(houseCenter) < 16.0) {
+                                        // Calmly clear walk target so they ignore and don't enter
+                                        villager.getNavigation().stop();
+                                        villager.getBrain().eraseMemory(MemoryModuleType.WALK_TARGET);
+                                    }
+                                }
                             }
                         }
                     }
@@ -104,7 +113,7 @@ public class VillageEventHandler {
             }
         }
 
-        // --- 3. BABY VILLAGER LOGIC ---
+        // --- 3. BABY VILLAGER MANAGEMENT ---
         if (villager.isBaby()) {
             if (!BABY_PARENT_MAP.containsKey(villagerId)) {
                 List<Villager> nearby = level.getEntitiesOfClass(
@@ -140,21 +149,9 @@ public class VillageEventHandler {
             return;
         }
 
-        // --- 4. HOUSE CLAIMING & ASSIGNMENT ---
+        // --- 4. HOUSE NAMING & NIGHT SLEEPING ---
         House assignedHouse = houseData.getHouseForVillager(villagerId);
 
-        if (assignedHouse == null) {
-            // Find an existing unowned house
-            for (House house : houseData.getAllHouses()) {
-                if (!house.isFull() && villager.blockPosition().closerThan(house.homePos, 24.0)) {
-                    houseData.assignVillagerToHouse(villagerId, house);
-                    assignedHouse = house;
-                    break;
-                }
-            }
-        }
-
-        // --- 5. BEHAVIOR & NIGHT MOVEMENT ---
         if (assignedHouse != null) {
             villager.setCustomName(Component.literal("House #" + assignedHouse.houseNumber));
             villager.setCustomNameVisible(true);
@@ -175,15 +172,9 @@ public class VillageEventHandler {
                         villager.getBrain().setMemory(MemoryModuleType.WALK_TARGET, new WalkTarget(targetPos, 0.5F, 1));
                         villager.getNavigation().moveTo(targetPos.getX(), targetPos.getY(), targetPos.getZ(), 0.5D);
                     }
-                } else {
-                    if (distSqr > 4.0 && villager.tickCount % 40 == 0) {
-                        villager.getBrain().setMemory(MemoryModuleType.WALK_TARGET, new WalkTarget(targetPos, 0.5F, 1));
-                        villager.getNavigation().moveTo(targetPos.getX(), targetPos.getY(), targetPos.getZ(), 0.5D);
-                    }
                 }
             }
         } else {
-            // Homeless villagers are cleared from taking non-owned home memories
             if (villager.getBrain().hasMemoryValue(MemoryModuleType.HOME)) {
                 villager.getBrain().eraseMemory(MemoryModuleType.HOME);
             }
@@ -208,11 +199,11 @@ public class VillageEventHandler {
         return null;
     }
 
-    private static void setDoorOpen(ServerLevel level, BlockPos doorPos, boolean open) {
+    private static void openDoorIfClosed(ServerLevel level, BlockPos doorPos) {
         BlockState state = level.getBlockState(doorPos);
         if (state.getBlock() instanceof DoorBlock) {
-            if (state.getValue(DoorBlock.OPEN) != open) {
-                level.setBlock(doorPos, state.setValue(DoorBlock.OPEN, open), 3);
+            if (!state.getValue(DoorBlock.OPEN)) {
+                level.setBlock(doorPos, state.setValue(DoorBlock.OPEN, true), 3);
             }
         }
     }
