@@ -20,27 +20,31 @@ public class HouseNumberData extends SavedData {
     private static final String DATA_NAME = "house_number_data";
 
     public static class House {
-        public final String villageId;
         public final int houseNumber;
         public final BlockPos homePos;
-        public final BlockPos bedPos; // Can be null if the house has no bed
+        public final BlockPos bedPos; // Can be null if door only
+        public final BlockPos doorPos; // Position of house entrance
         public final int maxCapacity;
         public final Set<UUID> assignedVillagers = new HashSet<>();
 
-        public House(String villageId, int houseNumber, BlockPos homePos, BlockPos bedPos, int maxCapacity) {
-            this.villageId = villageId;
+        public House(int houseNumber, BlockPos homePos, BlockPos bedPos, BlockPos doorPos, int maxCapacity) {
             this.houseNumber = houseNumber;
             this.homePos = homePos;
             this.bedPos = bedPos;
+            this.doorPos = doorPos;
             this.maxCapacity = maxCapacity;
         }
 
         public boolean isFull() {
             return assignedVillagers.size() >= maxCapacity;
         }
+
+        public boolean isOwner(UUID villagerId) {
+            return assignedVillagers.contains(villagerId);
+        }
     }
 
-    private final Map<String, Integer> villageHouseCounters = new HashMap<>();
+    private int nextHouseNumber = 1;
     private final List<House> registeredHouses = new ArrayList<>();
 
     public static HouseNumberData get(ServerLevel level) {
@@ -58,22 +62,24 @@ public class HouseNumberData extends SavedData {
         return Collections.unmodifiableList(registeredHouses);
     }
 
-    public House findExistingHouseAt(String villageId, BlockPos pos) {
+    public House findExistingHouseAt(BlockPos pos) {
         for (House house : registeredHouses) {
             BlockPos target = house.bedPos != null ? house.bedPos : house.homePos;
-            if (house.villageId.equals(villageId) && target.closerThan(pos, 6)) {
+            if (target.closerThan(pos, 6.0)) {
                 return house;
             }
         }
         return null;
     }
 
-    public House registerAndAssignHouse(ServerLevel level, String villageId, UUID ownerId, BlockPos homePos, BlockPos bedPos, int maxCapacity) {
-        int nextNumber = villageHouseCounters.getOrDefault(villageId, 0) + 1;
-        villageHouseCounters.put(villageId, nextNumber);
+    public House registerHouse(ServerLevel level, BlockPos homePos, BlockPos bedPos, BlockPos doorPos, int maxCapacity) {
+        House existing = findExistingHouseAt(homePos);
+        if (existing != null) {
+            return existing;
+        }
 
-        House newHouse = new House(villageId, nextNumber, homePos, bedPos, Math.max(1, maxCapacity));
-        newHouse.assignedVillagers.add(ownerId);
+        int number = nextHouseNumber++;
+        House newHouse = new House(number, homePos, bedPos, doorPos, Math.max(1, maxCapacity));
         registeredHouses.add(newHouse);
 
         spawnHouseTag(level, newHouse);
@@ -105,7 +111,6 @@ public class HouseNumberData extends SavedData {
 
     private void spawnHouseTag(ServerLevel level, House house) {
         BlockPos basePos = house.homePos;
-        // Find the top surface of the roof structure
         BlockPos roofPos = level.getHeightmapPos(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, basePos);
         int topY = Math.max(roofPos.getY(), basePos.getY() + 3);
         BlockPos tagPos = new BlockPos(basePos.getX(), topY, basePos.getZ());
@@ -134,38 +139,41 @@ public class HouseNumberData extends SavedData {
 
     public static HouseNumberData load(CompoundTag tag, HolderLookup.Provider registries) {
         HouseNumberData data = new HouseNumberData();
+        data.nextHouseNumber = tag.contains("NextHouseNumber") ? tag.getInt("NextHouseNumber") : 1;
 
         ListTag houseList = tag.getList("Houses", Tag.TAG_COMPOUND);
         for (int i = 0; i < houseList.size(); i++) {
             CompoundTag hTag = houseList.getCompound(i);
-            String vId = hTag.getString("VillageId");
             int num = hTag.getInt("Number");
             BlockPos homePos = BlockPos.of(hTag.getLong("HomePos"));
-
             BlockPos bedPos = hTag.contains("BedPos") ? BlockPos.of(hTag.getLong("BedPos")) : null;
+            BlockPos doorPos = hTag.contains("DoorPos") ? BlockPos.of(hTag.getLong("DoorPos")) : homePos;
             int cap = hTag.getInt("Capacity");
 
-            House house = new House(vId, num, homePos, bedPos, cap);
+            House house = new House(num, homePos, bedPos, doorPos, cap);
             int villagerCount = hTag.getInt("VillagerCount");
             for (int j = 0; j < villagerCount; j++) {
                 house.assignedVillagers.add(hTag.getUUID("Villager_" + j));
             }
             data.registeredHouses.add(house);
-            data.villageHouseCounters.put(vId, Math.max(data.villageHouseCounters.getOrDefault(vId, 0), num));
         }
         return data;
     }
 
     @Override
     public CompoundTag save(CompoundTag tag, HolderLookup.Provider registries) {
+        tag.putInt("NextHouseNumber", nextHouseNumber);
+
         ListTag houseList = new ListTag();
         for (House house : registeredHouses) {
             CompoundTag hTag = new CompoundTag();
-            hTag.putString("VillageId", house.villageId);
             hTag.putInt("Number", house.houseNumber);
             hTag.putLong("HomePos", house.homePos.asLong());
             if (house.bedPos != null) {
                 hTag.putLong("BedPos", house.bedPos.asLong());
+            }
+            if (house.doorPos != null) {
+                hTag.putLong("DoorPos", house.doorPos.asLong());
             }
             hTag.putInt("Capacity", house.maxCapacity);
 
