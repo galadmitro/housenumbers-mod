@@ -20,8 +20,10 @@ import java.util.*;
 
 public class HouseNumberData extends SavedData {
     private static final String DATA_NAME = "house_number_data";
+    private static final double VILLAGE_RADIUS = 64.0; // Distance threshold to group houses into a village
 
     public static class House {
+        public final int villageId;
         public final int houseNumber;
         public final BlockPos homePos;
         public final BlockPos bedPos;
@@ -30,7 +32,8 @@ public class HouseNumberData extends SavedData {
         public final int maxCapacity;
         public final Set<UUID> assignedVillagers = new HashSet<>();
 
-        public House(int houseNumber, BlockPos homePos, BlockPos bedPos, BlockPos doorPos, Vec3 roofCenterPos, int maxCapacity) {
+        public House(int villageId, int houseNumber, BlockPos homePos, BlockPos bedPos, BlockPos doorPos, Vec3 roofCenterPos, int maxCapacity) {
+            this.villageId = villageId;
             this.houseNumber = houseNumber;
             this.homePos = homePos;
             this.bedPos = bedPos;
@@ -48,7 +51,28 @@ public class HouseNumberData extends SavedData {
         }
     }
 
-    private int nextHouseNumber = 1;
+    public static class VillageCluster {
+        public final int villageId;
+        public int nextHouseNumber = 1;
+        public final List<House> houses = new ArrayList<>();
+
+        public VillageCluster(int villageId) {
+            this.villageId = villageId;
+        }
+
+        public boolean isNear(BlockPos pos, double maxDistance) {
+            for (House h : houses) {
+                BlockPos target = h.bedPos != null ? h.bedPos : h.homePos;
+                if (target.closerThan(pos, maxDistance)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+    }
+
+    private int nextVillageId = 1;
+    private final List<VillageCluster> clusters = new ArrayList<>();
     private final List<House> registeredHouses = new ArrayList<>();
 
     public static HouseNumberData get(ServerLevel level) {
@@ -76,15 +100,34 @@ public class HouseNumberData extends SavedData {
         return null;
     }
 
+    private VillageCluster findClusterNear(BlockPos pos) {
+        for (VillageCluster cluster : clusters) {
+            if (cluster.isNear(pos, VILLAGE_RADIUS)) {
+                return cluster;
+            }
+        }
+        return null;
+    }
+
     public House registerHouse(ServerLevel level, BlockPos homePos, BlockPos bedPos, BlockPos doorPos, int maxCapacity) {
         House existing = findExistingHouseAt(homePos);
         if (existing != null) {
             return existing;
         }
 
-        Vec3 centerRoof = calculateRoofCenter(level, bedPos != null ? bedPos : homePos);
-        int number = nextHouseNumber++;
-        House newHouse = new House(number, homePos, bedPos, doorPos, centerRoof, Math.max(1, maxCapacity));
+        BlockPos targetPos = bedPos != null ? bedPos : homePos;
+        VillageCluster cluster = findClusterNear(targetPos);
+
+        if (cluster == null) {
+            cluster = new VillageCluster(nextVillageId++);
+            clusters.add(cluster);
+        }
+
+        Vec3 centerRoof = calculateRoofCenter(level, targetPos);
+        int houseNumber = cluster.nextHouseNumber++;
+
+        House newHouse = new House(cluster.villageId, houseNumber, homePos, bedPos, doorPos, centerRoof, Math.max(1, maxCapacity));
+        cluster.houses.add(newHouse);
         registeredHouses.add(newHouse);
 
         spawnHouseTag(level, newHouse);
@@ -181,11 +224,14 @@ public class HouseNumberData extends SavedData {
 
     public static HouseNumberData load(CompoundTag tag, HolderLookup.Provider registries) {
         HouseNumberData data = new HouseNumberData();
-        data.nextHouseNumber = tag.contains("NextHouseNumber") ? tag.getInt("NextHouseNumber") : 1;
+        data.nextVillageId = tag.contains("NextVillageId") ? tag.getInt("NextVillageId") : 1;
+
+        Map<Integer, VillageCluster> clusterMap = new HashMap<>();
 
         ListTag houseList = tag.getList("Houses", Tag.TAG_COMPOUND);
         for (int i = 0; i < houseList.size(); i++) {
             CompoundTag hTag = houseList.getCompound(i);
+            int vId = hTag.contains("VillageId") ? hTag.getInt("VillageId") : 1;
             int num = hTag.getInt("Number");
             BlockPos homePos = BlockPos.of(hTag.getLong("HomePos"));
             BlockPos bedPos = hTag.contains("BedPos") ? BlockPos.of(hTag.getLong("BedPos")) : null;
@@ -193,23 +239,32 @@ public class HouseNumberData extends SavedData {
             Vec3 roofCenter = new Vec3(hTag.getDouble("RoofX"), hTag.getDouble("RoofY"), hTag.getDouble("RoofZ"));
             int cap = hTag.getInt("Capacity");
 
-            House house = new House(num, homePos, bedPos, doorPos, roofCenter, cap);
+            House house = new House(vId, num, homePos, bedPos, doorPos, roofCenter, cap);
             int villagerCount = hTag.getInt("VillagerCount");
             for (int j = 0; j < villagerCount; j++) {
                 house.assignedVillagers.add(hTag.getUUID("Villager_" + j));
             }
             data.registeredHouses.add(house);
+
+            VillageCluster cluster = clusterMap.computeIfAbsent(vId, id -> {
+                VillageCluster c = new VillageCluster(id);
+                data.clusters.add(c);
+                return c;
+            });
+            cluster.houses.add(house);
+            cluster.nextHouseNumber = Math.max(cluster.nextHouseNumber, num + 1);
         }
         return data;
     }
 
     @Override
     public CompoundTag save(CompoundTag tag, HolderLookup.Provider registries) {
-        tag.putInt("NextHouseNumber", nextHouseNumber);
+        tag.putInt("NextVillageId", nextVillageId);
 
         ListTag houseList = new ListTag();
         for (House house : registeredHouses) {
             CompoundTag hTag = new CompoundTag();
+            hTag.putInt("VillageId", house.villageId);
             hTag.putInt("Number", house.houseNumber);
             hTag.putLong("HomePos", house.homePos.asLong());
             if (house.bedPos != null) {
