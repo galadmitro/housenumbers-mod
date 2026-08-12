@@ -44,14 +44,15 @@ public class VillageEventHandler {
         HouseNumberData houseData = HouseNumberData.get(level);
         UUID villagerId = villager.getUUID();
 
-        // --- SCAN NEARBY BED STRUCTURES ---
+        // --- THOROUGH BED SCANNING (NO SKIPPED BLOCKS) ---
         if (houseData.getHouseForVillager(villagerId) == null || villager.tickCount % 20 == 0) {
             BlockPos villagerPos = villager.blockPosition();
             BlockPos.MutableBlockPos mutPos = new BlockPos.MutableBlockPos();
 
-            for (int x = -16; x <= 16; x += 2) {
-                for (int y = -6; y <= 6; y += 2) {
-                    for (int z = -16; z <= 16; z += 2) {
+            // Full 1-block increment sweep so no bed head is missed
+            for (int x = -18; x <= 18; x++) {
+                for (int y = -8; y <= 12; y++) {
+                    for (int z = -18; z <= 18; z++) {
                         mutPos.set(villagerPos.getX() + x, villagerPos.getY() + y, villagerPos.getZ() + z);
                         BlockState state = level.getBlockState(mutPos);
 
@@ -74,7 +75,7 @@ public class VillageEventHandler {
 
         Integer villagerVillageId = houseData.getVillageForVillager(villagerId);
 
-        // --- STRICT VILLAGE BOUNDARY CHECK ---
+        // --- VILLAGE BOUNDARY CHECK ---
         if (villager.getNavigation().getPath() != null) {
             BlockPos targetPos = villager.getNavigation().getPath().getTarget();
             House targetHouse = houseData.findHouseNear(targetPos, 4.0);
