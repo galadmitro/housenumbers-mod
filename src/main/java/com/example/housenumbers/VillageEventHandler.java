@@ -71,19 +71,27 @@ public class VillageEventHandler {
                     }
                 }
             }
-            // Auto-assign any homeless villagers immediately
             houseData.autoAssignLoadedVillagers(level);
         }
 
-        // --- PREVENT NON-OWNERS FROM ENTERING UNOWNED HOUSES ---
+        Integer villagerVillageId = houseData.getVillageForVillager(villagerId);
+
+        // --- STRICT VILLAGE BOUNDARY: CANCEL NAVIGATION TO OTHER VILLAGES ---
         if (villager.getNavigation().getPath() != null) {
             BlockPos targetPos = villager.getNavigation().getPath().getTarget();
             House targetHouse = houseData.findExistingHouseAt(targetPos);
+            
             if (targetHouse != null) {
-                boolean isOwnerOrBaby = targetHouse.isOwner(villagerId) || isBabyOfOwner(villager, targetHouse);
-                if (!isOwnerOrBaby) {
+                // Do not allow walking towards a house in another village cluster
+                if (villagerVillageId != null && targetHouse.villageId != villagerVillageId) {
                     villager.getNavigation().stop();
                     villager.getBrain().eraseMemory(MemoryModuleType.WALK_TARGET);
+                } else {
+                    boolean isOwnerOrBaby = targetHouse.isOwner(villagerId) || isBabyOfOwner(villager, targetHouse);
+                    if (!isOwnerOrBaby) {
+                        villager.getNavigation().stop();
+                        villager.getBrain().eraseMemory(MemoryModuleType.WALK_TARGET);
+                    }
                 }
             }
         }
@@ -148,7 +156,7 @@ public class VillageEventHandler {
             }
         }
 
-        // --- BABY VILLAGER MANAGEMENT & NAMETAGS ---
+        // --- BABY VILLAGER MANAGEMENT & NAMETAGS (SAME VILLAGE ONLY) ---
         if (villager.isBaby()) {
             if (!BABY_PARENT_MAP.containsKey(villagerId)) {
                 List<Villager> nearby = level.getEntitiesOfClass(
@@ -158,8 +166,14 @@ public class VillageEventHandler {
 
                 for (Villager v : nearby) {
                     if (!v.isBaby()) {
-                        BABY_PARENT_MAP.put(villagerId, v.getUUID());
-                        break;
+                        Integer parentVillage = houseData.getVillageForVillager(v.getUUID());
+                        if (villagerVillageId == null || parentVillage == null || villagerVillageId.equals(parentVillage)) {
+                            BABY_PARENT_MAP.put(villagerId, v.getUUID());
+                            if (parentVillage != null) {
+                                houseData.setVillagerVillage(villagerId, parentVillage);
+                            }
+                            break;
+                        }
                     }
                 }
             }
