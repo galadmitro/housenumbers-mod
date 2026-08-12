@@ -9,6 +9,7 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.tags.BlockTags;
 import net.minecraft.util.datafix.DataFixTypes;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.decoration.ArmorStand;
 import net.minecraft.world.entity.npc.Villager;
@@ -164,7 +165,28 @@ public class HouseNumberData extends SavedData {
         return null;
     }
 
+    // --- PURGE DEAD/DESPAWNED VILLAGERS FROM CLAIMED HOUSES ---
+    public void cleanupDeadVillagers(ServerLevel level) {
+        boolean changed = false;
+        for (House house : registeredHouses) {
+            Iterator<UUID> iterator = house.assignedVillagers.iterator();
+            while (iterator.hasNext()) {
+                UUID uuid = iterator.next();
+                Entity entity = level.getEntity(uuid);
+                if (entity != null && (!entity.isAlive() || !(entity instanceof Villager))) {
+                    iterator.remove();
+                    changed = true;
+                }
+            }
+        }
+        if (changed) {
+            setDirty();
+        }
+    }
+
     public void autoAssignLoadedVillagers(ServerLevel level) {
+        cleanupDeadVillagers(level);
+
         List<? extends Villager> villagers = level.getEntities(EntityType.VILLAGER, v -> !v.isBaby() && getHouseForVillager(v.getUUID()) == null);
 
         for (Villager villager : villagers) {
@@ -285,7 +307,6 @@ public class HouseNumberData extends SavedData {
             marker.setCustomName(Component.literal("House #" + house.houseNumber));
             marker.setCustomNameVisible(true);
 
-            // Ensures the ArmorStand model stays hidden while showing the text tag above the roof
             marker.setInvisible(true);
             marker.setNoGravity(true);
 
